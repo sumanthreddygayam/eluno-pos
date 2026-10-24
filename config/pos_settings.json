@@ -1,0 +1,9 @@
+{
+  "about": "Business settings for the till. Money in paise.",
+  "offer_policy": "best_for_customer",
+  "manual_discount_offer_id": "MANAGER_OVERRIDE",
+  "till_variance_alert_paise": 20000,
+  "refund_lookback_days": 90,
+  "visit_cache_seconds": 900,
+  "remake_offer_id": "REMAKE_GOODWILL"
+}

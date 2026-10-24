@@ -1,0 +1,2 @@
+# Keep LF everywhere so outputs and the byte-for-byte invoice test are identical on every OS
+* text=auto eol=lf

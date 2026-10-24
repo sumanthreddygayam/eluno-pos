@@ -1,0 +1,43 @@
+{
+  "about": "Reason codes the till accepts, by action. Auditors see the code and who used it. Add or retire codes here; no code change needed.",
+  "discount_override": {
+    "WALKOUT_SAVE": "Customer about to walk out",
+    "PRICE_MATCH": "Matching a quoted or competitor price",
+    "SERVICE_RECOVERY": "Making up for a service failure",
+    "LOYALTY_GESTURE": "Goodwill for a long-standing customer"
+  },
+  "refund": {
+    "CHANGED_MIND": "Customer changed their mind within the return window",
+    "DEFECTIVE_FRAME": "Frame defect",
+    "WRONG_ITEM": "Wrong item billed or handed over",
+    "RX_ISSUE": "Lens does not work for the prescription",
+    "BILLING_ERROR": "Billed in error"
+  },
+  "remake": {
+    "PROGRESSIVE_NON_ADAPTATION": "Customer could not adapt to progressive lenses",
+    "EXTERNAL_RX_ERROR": "The external prescription was wrong",
+    "IN_STORE_RX_ERROR": "Our eye test was wrong",
+    "LAB_DEFECT": "Lab or fitting defect"
+  },
+  "remake_cost_bearer": {
+    "eluno": "Eluno absorbs the lab cost",
+    "customer": "Customer pays the lab cost (bill a normal lens-only sale instead)",
+    "external_optometrist": "Recovered from the external optometrist"
+  },
+  "paid_out": {
+    "COURIER": "Courier charges",
+    "TEA_SNACKS": "Tea and snacks",
+    "STATIONERY": "Stationery and supplies",
+    "BANK_DEPOSIT": "Cash deposited to the bank",
+    "OTHER": "Other (note required)"
+  },
+  "paid_in": {
+    "CHANGE_FROM_HQ": "Change sent from HQ",
+    "FLOAT_TOP_UP": "Float top-up",
+    "OTHER": "Other (note required)"
+  },
+  "void": {
+    "SHOPIFY_REJECTED": "Shopify rejected the order and it cannot be fixed",
+    "BILLING_ERROR": "Billed in error before the order reached Shopify"
+  }
+}
