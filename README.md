@@ -220,45 +220,64 @@ with the mock's 429/503 on and no console errors.
 
 ## Where AI tools helped, and where they misled me
 
-I built this with Claude Code as my main tool, and it wrote most of the code. My part was deciding what to build,
-pushing back when results didn't match the brief or the data, and checking every claim against a test, a
-measurement or the seed files.
+I built this with Claude Code as my main tool, and it wrote most of the code. My job was deciding what to build, pushing back when the output didn't fit the brief or the data, and refusing to believe anything that wasn't backed by a test, a measurement or the seed files. Below is what it was good at, what it got wrong, and the rules I now use to work with it.
 
-**Where it helped:**
-* **Reading the seed data quickly.** It spotted the prescriptions dated in the future, and that seed order #1001
-  had a better offer combination (₹1,800 vs the ₹1,424.85 the old system gave).
-* **Scaffolding.** The ports-and-adapters structure and the bulk of the 100+ tests.
-* **Failure tools.** The fault injector that fakes lost responses, outages and declined cards, and the timing bench.
-* **Docs.** First drafts of the decision log and flow docs.
+### Where it helped
 
-**Where it misled me, and what caught it:**
-* **Invoice numbers at go-live.** Its first design set up each store's invoice series *during* payment, so a
-  Shopify outage at the first sale could charge a customer with no invoice possible. The integration tests caught
-  it; the series is now ready before any money moves.
-* **Stuck cash refunds.** A cash refund the drawer couldn't cover left a half-written record that blocked every
-  retry. Tests caught it; refunds now check everything before recording anything.
-* **The mock's terminal.** It trusted the starter kit's README that the terminal is idempotent per `order_ref`.
-  Reading `mock_server.py` showed it isn't after a successful charge, so the till now never re-charges a bill
-  that has a charge id.
-* **Checkout speed.** On Windows, `localhost` resolves to IPv6 first and the mock is IPv4-only, so every call cost
-  about 2 s and a bill took 8 s. Measuring found it, not the AI.
-* **A phantom pause.** A 0.5 s pause in checkout came from the mock stamping Shopify's rate-limit header on
-  terminal answers too. The bench exposed it.
-* **Test expectations.** A few of its hand-calculated expectations were wrong (a pro-rata split of ₹300 it
-  "knew" was 163.65; it is 163.62). The tests caught them.
-* **Policies.** It released a frame immediately when a card was declined; I changed the rule so the frame stays
-  reserved until the bill is paid or cancelled. Its first stakeholder reply restated the brief to Priya; I
-  rewrote it around real decisions and real payment-method timings.
-* **The till screen (Round 2).** It wrote the screen quickly, but reading the code didn't show the problems; driving
-  it in a real browser did:
-  * after a finished sale, the customer box stayed locked until "Next customer" was pressed;
-  * error messages showed raw mock URLs;
-  * the payment time was labelled "the till's part" even when it included the customer approving UPI.
+* **Breadth, fast.** In a few hours it produced the shape of a real system: ports and adapters, a bill state machine, an outbox to Shopify, gapless invoice series, refunds, the cash drawer and day-end. That left my time for judgement: what happens when the card machine stops answering, and who is allowed to cancel then.
+* **Reading the data closely.** It found things in the seed files that were easy to miss:
+  * prescriptions dated after "today", which are data-entry errors that must never be billed against;
+  * an external prescription with an axis off the 5° grid;
+  * seed order #1001, where a better offer combination existed (₹1,800 off against the ₹1,424.85 the old system gave).
+* **Tools to test failure.** The mock can only fail in one way: random 429s and 503s. The AI built a fault injector that can also lose a response after the server has applied the write, take Shopify down, decline a card or stall a UPI approval. It also built a timing bench that simulates Shopify's rate limit. Most of the hard cases in this repo exist because these tools made them cheap to reproduce.
+* **Showing what's happening.** Every API response carries a trace of the Shopify, store-tool and terminal calls it made. The till screen shows each 429 and 503, and the retry that absorbed it, while you bill. That came from asking it "how would a reviewer *see* the retries?"
+* **Tests as a habit.** It wrote tests alongside the code: money math to the paisa against all 12 seed orders, idempotency, two tills racing for one frame. Those tests then caught its own mistakes (below).
 
-  One "bug" it reported, an order that never synced after a Shopify outage, was its own test script checking too
-  early. The bill's audit trail showed the order had synced.
+### Where it misled me
 
-The lesson I took: it's very fast, but nothing it says is true until a test, a measurement or the data agrees.
+The mistakes weren't random. They fell into four patterns, and each needed a different safeguard.
+
+**1. Happy-path designs that break when things fail out of order**
+
+* **Invoice numbers at go-live.** Its first design set up a store's invoice series *during* payment, by asking Shopify for the last number used. That looked reasonable and worked in every normal run. But if Shopify was down at a store's first sale after go-live, the customer would be charged and no invoice number could be issued. *Caught by:* an integration test that takes Shopify down before the first sale. *Now:* the series is set up at cutover, and payment refuses before any money moves if it isn't ready.
+* **The half-recorded cash refund.** A cash refund larger than the drawer could cover failed *after* the refund had already been recorded. Every retry was then blocked by the stuck record. *Caught by:* tests. *Now:* a refund checks everything first (the drawer, the credit-note series, what Shopify will accept) and records nothing until all checks pass.
+* **Releasing the frame on a declined card.** It released the reserved frame the moment a card was declined. It sounds tidy, but the customer is still at the counter and usually pays another way, while a second till could sell the frame in that gap. *Caught by:* me, walking through the store scenario. *Now:* the frame stays reserved until the bill is paid or cancelled, and day-end lists any frame left reserved.
+
+**2. Confident about things it hadn't checked**
+
+* **The terminal's "idempotency".** The starter kit's README says a retried charge with the same `order_ref` is safe. The AI took that at face value. Reading `mock_server.py` showed it is only true until the first successful charge. After that, a retry would charge the customer again. *Now:* the till never sends a charge for a bill that already has a charge id, and it saves the charge id before doing anything else.
+* **Arithmetic it "knew".** It hand-wrote test expectations for discount splits and was sometimes wrong. It was sure one ₹300 split gave ₹163.65; the correct figure is ₹163.62. *Caught by:* the tests themselves. *Now:* expected values come from the formula in `validate_seed.py`, never from mental arithmetic.
+* **A bug that wasn't one.** It reported that an order "never synced" after a Shopify outage. In fact its own browser test had checked before the sync finished. The bill's audit trail showed the order had reached Shopify. *Now:* a bug report needs evidence from the system (the audit trail, Shopify's records), not from the test harness.
+* **Testing against a stale server.** While checking the All stores report in a browser, it fixed the Python code but kept testing against a server still running the old version. *Caught by:* noticing the server had been started before the fix. *Now:* restart the server after any server-side change before trusting a screen.
+
+**3. Problems you can't see by reading code**
+
+* **8 seconds per bill on Windows.** Everything was correct and slow. On Windows `localhost` tries IPv6 first while the mock only listens on IPv4, which added about 2 s to every call. *Caught by:* measuring each step, not reading code. *Now:* the code uses `127.0.0.1`, and the timing bench keeps a per-step budget.
+* **A phantom half-second pause.** The rate-limit throttle reacted to Shopify's call-limit header, but the mock sends that header on card-machine replies too. *Caught by:* the bench. *Now:* the throttle reads that header only on Shopify calls.
+* **"Still" contains "till".** The All stores report sorts alerts by keyword. "Frame still reserved" was filed under Cash drawer because "s**till**" contains "till". The logic was correct; the English wasn't. *Caught by:* looking at the actual screen. *Now:* keywords match whole words, and a test checks the category.
+
+**4. Screens it couldn't see**
+
+* **Its first screens were functional and dull.** Twice it produced a generic "admin page" look: very spaced out, with no sense of a real till. *Fixed by:* pointing it at a real product. The final layout follows Shopify POS on a tablet: navigation on the left, the cart always visible on the right with its total and checkout at the bottom. The colours follow Shopify's Polaris palette. With a concrete reference it designed well; without one it played safe.
+* **The pay buttons drew over the price.** I found this in a screenshot, not in any test: a "sticky" card slid over the payment buttons when the page scrolled.
+* **Small things that make a till feel wrong.** Driving the screen in a real headless browser at laptop and tablet widths caught issues the code didn't show:
+  * the customer box stayed locked after a sale;
+  * raw mock URLs appeared in error messages;
+  * dates rendered as "2027 - 07 - 10" because a number-font setting was applied to all text;
+  * payment time was labelled "the till's part" even when it included the customer approving UPI.
+
+**Also: writing for people.** Its first reply to the stakeholders restated the brief back to Priya, who wrote it. I had it rewritten around the decisions only she and the others can make, with defaults and real per-payment-method timings. It also used terms like "re-price" without explaining them, which a store team wouldn't follow.
+
+### How I work with it now
+
+1. **Failure order first.** For anything involving money or stock, ask: "what if this step fails after the previous one succeeded?" Write that test before the code.
+2. **Read the source, not the README.** For any system the till depends on, the mock's code beats its documentation.
+3. **Numbers come from formulas and measurements,** never from the AI's head.
+4. **Enforce the rules in code.** `test_architecture.py` stops the domain code from importing anything it shouldn't. It caught the AI importing `calendar` into the domain code while adding prescriptions.
+5. **Look at the real screen,** in a real browser at a real tablet width, after restarting anything that changed.
+6. **Give it a reference.** "Make it look good" got generic results; "follow Shopify POS and Polaris" got a till.
+
+It is very fast and genuinely useful, but nothing it says is true until a test, a measurement, the data or the screen agrees.
 
 ## Changes to the starter kit
 
