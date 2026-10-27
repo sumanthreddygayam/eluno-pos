@@ -162,7 +162,7 @@ class Api:
         for f in sorted(frames, key=lambda f: f.sku):
             key = (f.inventory_item_id, store.location_id)
             in_shopify, on_hold = levels.get(key, 0), held.get(key, 0)
-            out_frames.append({"sku": f.sku, "title": f.title, "variant": f.variant_title, "description": f.description, "mrp": f.mrp,
+            out_frames.append({"sku": f.sku, "inventory_item_id": f.inventory_item_id, "title": f.title, "variant": f.variant_title, "description": f.description, "mrp": f.mrp,
                                "category": f.category, "rx_able": f.rx_able, "in_shopify": in_shopify, "held": on_hold,
                                "available": max(0, in_shopify - on_hold),
                                "elsewhere": {code: levels[(f.inventory_item_id, loc)] for loc, code in others.items()

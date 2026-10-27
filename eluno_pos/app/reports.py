@@ -7,6 +7,7 @@ from ..adapters.sqlite_repo import SqliteRepository
 from ..config import BusinessConfig
 from ..domain.dayend import DayEndReport, Finding, build_day_end, reconcile
 from ..domain.documents import CREDIT_NOTE, INVOICE, series_key
+from ..domain.money import format_inr
 from ..ports import CommercePlatform
 from .common import Directory
 
@@ -59,9 +60,9 @@ class ReportService:
                         "expected": s.expected_cash_paise, "counted": s.counted_cash_paise, "variance": s.variance_paise,
                         "flagged": s.variance_flagged}
             if cash_net is not None and cash_net.net != till_sales:
-                rep.findings.append(Finding("error", "Cash in Shopify (net %d paise) does not match the till's cash sales less refunds (%d paise)." % (cash_net.net, till_sales)))
+                rep.findings.append(Finding("error", "Cash in Shopify (net Rs %s) does not match the till's cash sales less refunds (Rs %s)." % (format_inr(cash_net.net), format_inr(till_sales))))
             if s.variance_flagged:
-                rep.findings.append(Finding("warning", "Till variance %d paise exceeds the alert threshold; flagged to finance." % (s.variance_paise or 0)))
+                rep.findings.append(Finding("warning", "Till variance Rs %s exceeds the alert threshold; flagged to finance." % format_inr(s.variance_paise or 0)))
         elif rep.by_payment_method.get("cash"):
             rep.findings.append(Finding("warning", "Cash bills in Shopify but no till session recorded for %s on %s." % (store_code, day)))
         return rep

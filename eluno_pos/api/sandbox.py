@@ -9,6 +9,7 @@ none of this exists. Here it lets a reviewer:
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -18,7 +19,7 @@ from dataclasses import replace
 from typing import Any, Dict, Iterator, Optional
 
 from ..app import PosApp
-from ..config import Settings
+from ..config import ROOT, Settings
 from ..devtools import FaultInjector, MockServer, free_port
 
 # name -> (what the reviewer sees, how to arm it on the injector)
@@ -44,6 +45,16 @@ FAULTS: Dict[str, Dict[str, Any]] = {
         "arm": lambda f: f.outage("POST", "orders.json"),
     },
 }
+
+
+def _sample_customers() -> list:
+    """Seed customers, so a reviewer can pick someone without knowing the synthetic phone numbers."""
+    try:
+        with open(os.path.join(ROOT, "starter-kit", "data", "customers.json"), encoding="utf-8") as f:
+            return [{"phone": c["phone"], "name": ("%s %s" % (c.get("first_name", ""), c.get("last_name", ""))).strip(),
+                     "tags": [t.strip() for t in (c.get("tags") or "").split(",") if t.strip()]} for c in json.load(f)]
+    except (OSError, ValueError, KeyError):
+        return []
 
 
 class Sandbox:
@@ -125,4 +136,4 @@ class Sandbox:
         return {"mock_flaky": self.flaky, "mock_url": self.mock.url if self.mock else None,
                 "available": [{"name": k, "label": v["label"]} for k, v in FAULTS.items()],
                 "armed": [{"kind": r["kind"], "call": "%s %s" % (r["method"], r["part"]), "left": r["left"]} for r in live],
-                "log": self.faults.log[-20:]}
+                "log": self.faults.log[-20:], "sample_customers": _sample_customers()}

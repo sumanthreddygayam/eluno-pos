@@ -1,4 +1,185 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>Eluno till</title>
-<p>The till screen is being built. The API is live: try <a href="/meta">/meta</a> or <a href="/stores">/stores</a>.</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eluno Till</title>
+<link rel="stylesheet" href="/web/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Eluno <span>till</span></div>
+  <label class="field inline">Store
+    <select id="store"></select>
+  </label>
+  <label class="field inline">Staff
+    <select id="staff"></select>
+  </label>
+  <div class="topinfo">
+    <span id="bizdate" class="chip"></span>
+    <span id="mode" class="chip"></span>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="bill" class="active">New bill</button>
+  <button data-tab="bills">Bills today</button>
+  <button data-tab="refund">Refund</button>
+  <button data-tab="till">Cash drawer</button>
+  <button data-tab="dayend">Day-end</button>
+  <button data-tab="demo" id="demo-tab" hidden>Demo controls</button>
+</nav>
+
+<main>
+  <!-- ============================================================ NEW BILL -->
+  <section id="tab-bill" class="tab active">
+    <div class="grid">
+      <div class="col">
+        <div class="card">
+          <h2>1. Customer</h2>
+          <form id="lookup-form" class="row">
+            <input id="phone" type="tel" inputmode="tel" placeholder="Mobile number (10 digits)" list="sample-phones" autocomplete="off" required>
+            <datalist id="sample-phones"></datalist>
+            <button type="submit" class="primary">Look up</button>
+          </form>
+          <div id="customer"></div>
+        </div>
+
+        <div class="card" id="cart-card">
+          <h2>2. Frames and lenses</h2>
+          <fieldset id="cart">
+            <div id="pairs"></div>
+            <div class="row">
+              <button type="button" id="add-pair">+ Add another pair</button>
+              <button type="button" id="refresh-stock" class="ghost" title="Read stock from Shopify again">Refresh stock</button>
+            </div>
+            <div class="row wrap">
+              <label class="field">Where the customer came from
+                <select id="channel"></select>
+              </label>
+            </div>
+            <details id="discount-box">
+              <summary>Manager's discount</summary>
+              <div class="row wrap">
+                <label class="field">Percent
+                  <input id="disc-pct" type="number" min="1" max="50" step="1" placeholder="10">
+                </label>
+                <label class="field">Approved by
+                  <select id="disc-approver"></select>
+                </label>
+                <label class="field">Reason
+                  <select id="disc-reason"></select>
+                </label>
+                <button type="button" id="disc-clear" class="ghost">Remove</button>
+              </div>
+              <p class="muted small">Only applied if it beats the running offers for this customer; it's recorded with the approver and reason either way.</p>
+            </details>
+          </fieldset>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="card sticky">
+          <h2>3. Price</h2>
+          <div id="quote"><p class="muted">Look up a customer and pick a frame or lens.</p></div>
+        </div>
+        <div class="card">
+          <h2>4. Payment</h2>
+          <div id="payment"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ BILLS TODAY -->
+  <section id="tab-bills" class="tab">
+    <div class="card">
+      <div class="row spread">
+        <h2>Bills today</h2>
+        <div class="row">
+          <button id="sync-all">Send pending to Shopify</button>
+          <button id="bills-reload" class="ghost">Reload</button>
+        </div>
+      </div>
+      <div id="bills"></div>
+    </div>
+    <div class="card">
+      <h2>Frames reserved by unfinished bills</h2>
+      <div id="holds"></div>
+    </div>
+    <div class="card" id="audit-card" hidden>
+      <div class="row spread"><h2 id="audit-title">History</h2><button id="audit-close" class="ghost">Close</button></div>
+      <div id="audit"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ REFUND -->
+  <section id="tab-refund" class="tab">
+    <div class="grid">
+      <div class="col">
+        <div class="card">
+          <h2>Find the invoice</h2>
+          <form id="refund-find" class="row">
+            <input id="refund-invoice" placeholder="Invoice number, e.g. ELU/HSR/FY26/00003" autocomplete="off" required>
+            <button type="submit" class="primary">Find</button>
+          </form>
+          <p class="muted small">Bills from before the switch-over are read from Shopify. A refund is made at the store that billed it.</p>
+          <div id="refund-recent"></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <h2>Refund</h2>
+          <div id="refund-bill"><p class="muted">Find an invoice first.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ TILL -->
+  <section id="tab-till" class="tab">
+    <div class="card">
+      <div class="row spread"><h2>Cash drawer</h2><button id="till-reload" class="ghost">Reload</button></div>
+      <div id="till"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ DAY-END -->
+  <section id="tab-dayend" class="tab">
+    <div class="card">
+      <form id="dayend-form" class="row wrap">
+        <h2 class="grow">Day-end report</h2>
+        <label class="field inline">Date <input id="dayend-date" type="date"></label>
+        <button type="submit" class="primary">Run</button>
+      </form>
+      <p class="muted small">Read from Shopify (the system of record) and checked against this till's invoices, credit notes and cash drawer.</p>
+      <div id="dayend"></div>
+    </div>
+    <div class="card">
+      <h2>Where bills came from, all stores</h2>
+      <div id="channels"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ DEMO CONTROLS -->
+  <section id="tab-demo" class="tab">
+    <div class="card">
+      <h2>Demo controls</h2>
+      <p class="muted">This hosted demo runs the starter-kit mock (Shopify, store tool, payment terminal) inside the same server.
+        Nothing here exists in a real store.</p>
+      <div id="sandbox"></div>
+    </div>
+  </section>
+</main>
+
+<aside id="netlog" class="netlog collapsed">
+  <button id="netlog-toggle" class="netlog-head">
+    <span>Network</span><span id="netlog-summary" class="muted"></span>
+  </button>
+  <div id="netlog-body"></div>
+</aside>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/web/app.js"></script>
+</body>
+</html>
