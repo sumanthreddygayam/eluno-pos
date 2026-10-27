@@ -382,8 +382,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("check-config", help="validate tax rates, offers and reason codes")
 
-    s = sub.add_parser("serve", help="run the HTTP API")
+    s = sub.add_parser("serve", help="run the HTTP API and till screen against --base-url")
     s.add_argument("--port", type=int, default=8000)
+    s.add_argument("--host", default="127.0.0.1")
     return p
 
 
@@ -402,7 +403,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_check_config(settings)
     if a.command == "serve":
         from .api import serve
-        serve(settings, a.port)
+        serve(settings, a.port, a.host)
         return 0
     app = PosApp(settings)
     try:

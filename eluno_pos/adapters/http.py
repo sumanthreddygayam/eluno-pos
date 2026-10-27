@@ -14,12 +14,14 @@ import json
 import logging
 import random
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 
 from ..ports import AmbiguousWrite, IntegrationError, UpstreamRejected
 
@@ -49,6 +51,34 @@ def urllib_transport(method: str, url: str, headers: Dict[str, str], body: Optio
         raise TransportError(str(e.reason), sent=not refused)
     except (socket.timeout, TimeoutError, ConnectionError) as e:
         raise TransportError("%s: %s" % (type(e).__name__, e))
+
+
+_trace = threading.local()
+
+
+@contextmanager
+def trace() -> Iterator[List[Dict[str, Any]]]:
+    """Collect every upstream attempt made on this thread (service, call, status, wait before retry).
+
+    The till API returns it with each response, so the screen can show a 429 or 503 being absorbed."""
+    events: List[Dict[str, Any]] = []
+    outer = getattr(_trace, "events", None)
+    _trace.events = events
+    try:
+        yield events
+    finally:
+        _trace.events = outer
+
+
+def _record(service: str, method: str, url: str, status: Any, started: float) -> Optional[Dict[str, Any]]:
+    events = getattr(_trace, "events", None)
+    if events is None:
+        return None
+    path = urllib.parse.urlparse(url).path
+    e = {"service": service, "call": "%s %s" % (method, path.replace("/admin/api/2026-10/", "/")), "status": status,
+         "ms": int((time.monotonic() - started) * 1000)}
+    events.append(e)
+    return e
 
 
 @dataclass(frozen=True)
@@ -109,15 +139,18 @@ class HttpClient:
             attempt += 1
             self.calls += 1
             last = attempt >= self.policy.max_attempts
+            started = time.monotonic()
             try:
                 status, rheaders, raw = self.transport(method, url, headers, data, self.timeout)
             except TransportError as e:
+                ev = _record(self.service, method, url, "no response", started)
                 if not e.sent or idempotent:
                     if last:
                         raise IntegrationError(self.service, "%s %s failed after %d attempts: %s" % (method, url, attempt, e))
-                    self._pause(self.policy.backoff(attempt), "%s %s: %s" % (method, url, e))
+                    self._pause(self.policy.backoff(attempt), "%s %s: %s" % (method, url, e), ev)
                     continue
                 raise AmbiguousWrite(self.service, "%s %s: no response (%s); the write may have happened" % (method, url, e))
+            ev = _record(self.service, method, url, status, started)
             payload = _decode(raw)
             if 200 <= status < 300:
                 if self.service == "shopify":  # only Shopify's own bucket counts (the mock stamps the header on every answer)
@@ -126,11 +159,11 @@ class HttpClient:
             if status == 429:
                 if last:
                     raise IntegrationError(self.service, "rate limited on %s %s after %d attempts" % (method, url, attempt), status, payload)
-                self._pause(self._retry_after(rheaders, attempt), "429 on %s %s" % (method, url))
+                self._pause(self._retry_after(rheaders, attempt), "429 on %s %s" % (method, url), ev)
                 continue
             if status >= 500:
                 if idempotent and not last:
-                    self._pause(self.policy.backoff(attempt), "%d on %s %s" % (status, method, url))
+                    self._pause(self.policy.backoff(attempt), "%d on %s %s" % (status, method, url), ev)
                     continue
                 if not idempotent and method != "GET":
                     raise AmbiguousWrite(self.service, "%d on %s %s; the write may have happened" % (status, method, url), status, payload)
@@ -143,8 +176,10 @@ class HttpClient:
         except ValueError:
             return self.policy.backoff(attempt)
 
-    def _pause(self, seconds: float, why: str) -> None:
+    def _pause(self, seconds: float, why: str, event: Optional[Dict[str, Any]] = None) -> None:
         self.retries += 1
+        if event is not None:
+            event["retry_in"] = round(seconds, 2)
         log.info("%s: retrying in %.2fs (%s)", self.service, seconds, why)
         self.sleep(seconds)
 

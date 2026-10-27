@@ -99,7 +99,9 @@ class Refund:
         self.last_error = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d.update(amount=self.amount, taxable=self.taxable, tax=self.tax)  # derived, for API clients; ignored by from_dict
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Refund":

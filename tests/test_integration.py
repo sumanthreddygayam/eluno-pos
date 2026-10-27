@@ -18,7 +18,7 @@ from eluno_pos.app.billing import BillRequest, PairRequest
 from eluno_pos.config import Settings
 from eluno_pos.devtools import FaultInjector, MockServer, free_port
 from eluno_pos.domain.bill import DRAFT, PAID, SYNCED, VOIDED
-from eluno_pos.domain.errors import BillBlocked, PaymentFailed, StateConflict
+from eluno_pos.domain.errors import BillBlocked, NotFound, PaymentFailed, StateConflict
 from eluno_pos.domain.money import to_decimal_str
 
 DAY = "2026-10-22"
@@ -459,6 +459,70 @@ class HttpApi(MockTestCase):
         self.assertIn("1.60, 1.67, 1.74", out["error"]["details"]["issues"][0]["hint"])
         status, out = self.call("GET", "/customers/+919999999999")
         self.assertEqual((status, out["error"]["code"]), (404, "customer_not_found"))
+
+    def test_screen_endpoints_show_live_stock_holds_and_refundable_lines(self):
+        status, cat = self.call("GET", "/catalog?store=HSR")
+        fr3 = next(f for f in cat["frames"] if f["sku"] == "FR-0003")
+        self.assertEqual((status, fr3["held"], fr3["available"]), (200, 0, fr3["in_shopify"]))
+        self.assertIn("progressive/1.60/blue_cut", [l["code"] for l in cat["lenses"]])
+        bill, _ = self.app.billing.create(KARTHIK)
+        self.faults.reject("POST", "/terminal/charges", 402, {"error": "declined"})
+        status, out = self.call("POST", "/bills/%s/pay" % bill.bill_id, {"method": "card"})
+        self.assertEqual((status, out["error"]["code"]), (402, "payment_declined"))
+        fr3_now = next(f for f in self.call("GET", "/catalog?store=HSR")[1]["frames"] if f["sku"] == "FR-0003")
+        self.assertEqual((fr3_now["held"], fr3_now["available"]), (1, fr3["in_shopify"] - 1))  # reserved for the customer at the counter
+        status, paid = self.call("POST", "/bills/%s/pay" % bill.bill_id, {"method": "upi"})
+        self.assertEqual(paid["status"], "synced")
+        status, bills = self.call("GET", "/bills?store=HSR&date=%s" % DAY)
+        self.assertEqual([(b["invoice_no"], b["status"]) for b in bills["bills"]], [(paid["invoice_no"], "synced")])
+        q = urllib.parse.quote(paid["invoice_no"], safe="")
+        self.call("POST", "/refunds", {"invoice_no": paid["invoice_no"], "store_code": "HSR", "staff_id": "S105", "reason_code": "DEFECTIVE_FRAME", "lines": ["1F"]})
+        status, lk = self.call("GET", "/refunds/lookup?invoice_no=%s&store=HSR" % q)
+        self.assertEqual((status, lk["refunded_line_refs"], len(lk["refunds"])), (200, ["1F"], 1))
+        self.assertEqual(self.call("GET", "/bills?store=HSR&date=%s" % DAY)[1]["bills"][0]["refunded"], lk["refunds"][0]["amount"])
+
+    def test_every_response_lists_the_upstream_calls_it_made(self):
+        self.faults.outage("GET", "inventory_levels.json", times=1)  # one 503, absorbed by a retry
+        req = urllib.request.Request("http://127.0.0.1:%d/catalog?store=HSR" % self.port)
+        with urllib.request.urlopen(req) as r:
+            net = json.loads(r.headers["X-Eluno-Network"])
+        stock = [e for e in net if "inventory_levels" in e["call"]]
+        self.assertEqual([e["status"] for e in stock], [503, 200])
+        self.assertIn("retry_in", stock[0])
+
+    def test_the_till_screen_is_served_and_nothing_else_is(self):
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % self.port) as r:
+            self.assertIn("text/html", r.headers["Content-Type"])
+        for path in ("/web/../api/__init__.py", "/web/%2e%2e/api/__init__.py"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen("http://127.0.0.1:%d%s" % (self.port, path))
+            self.assertEqual(e.exception.code, 404)
+
+
+class HostedDemo(unittest.TestCase):
+    """The sandbox behind `python run.py serve`: its own mock, switchable faults, reset to the seed."""
+
+    def test_faults_and_reset(self):
+        from eluno_pos.api.sandbox import Sandbox
+        sb = Sandbox(Settings(business_date=DAY, db_path=os.path.join(tempfile.mkdtemp(), "unused.db")), flaky=False)
+        try:
+            api = Api(sandbox=sb)
+            body = {"store_code": "HSR", "staff_id": "S105", "customer_phone": "+919000000005",
+                    "pairs": [{"frame_sku": "FR-0003", "lens": "progressive/1.60/blue_cut"}]}
+            bill = api.dispatch("POST", "/bills", body)[1]["bill"]
+            api.dispatch("POST", "/admin/faults", {"fault": "shopify_refuses_orders"})
+            paid = api.dispatch("POST", "/bills/%s/pay" % bill["bill_id"], {"method": "upi"})[1]
+            self.assertEqual(paid["status"], "paid")  # invoice issued; the order waits for Shopify
+            api.dispatch("POST", "/admin/faults", {"fault": "clear"})
+            api.dispatch("POST", "/sync", {})
+            self.assertEqual(api.dispatch("GET", "/bills/%s" % bill["bill_id"], None)[1]["status"], "synced")
+            out = api.dispatch("POST", "/admin/reset", {"flaky": True})[1]
+            self.assertTrue(out["mock_flaky"])
+            self.assertEqual(api.dispatch("GET", "/bills?store=HSR&date=%s" % DAY, None)[1]["bills"], [])
+            with self.assertRaises(NotFound):
+                Api(sb.app).dispatch("GET", "/admin/sandbox", None)
+        finally:
+            sb.close()
 
 
 if __name__ == "__main__":

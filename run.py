@@ -6,16 +6,14 @@
     python run.py race            two tills, one last frame: holds, returns, declined and stuck payments, second by second
     python run.py bench           checkout timing per step, retries, many tills at once, Wi-Fi trouble (simulated network)
     python run.py test            unit + integration tests
-    python run.py serve           mock on :8787 (if not already up) + POS HTTP API on :8000
+    python run.py serve           till screen + API on http://127.0.0.1:8000 with its own flaky mock (--no-flake: 429/503 off)
     python run.py mock            just the mock (flaky), like starter-kit/README
     python run.py pos <args>      the CLI, same as `python -m eluno_pos <args>`
 """
 import os
 import subprocess
 import sys
-import time
 import unittest
-import urllib.request
 
 if sys.version_info < (3, 8):
     sys.exit("Eluno POS needs Python 3.8 or newer (found %d.%d). Install a newer Python and run again." % sys.version_info[:2])
@@ -23,14 +21,6 @@ if sys.version_info < (3, 8):
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 MOCK = os.path.join(HERE, "starter-kit", "mock-apis", "mock_server.py")
-
-
-def _mock_up(url: str) -> bool:
-    try:
-        urllib.request.urlopen(url + "/health", timeout=1).read()
-        return True
-    except OSError:
-        return False
 
 
 def main(argv):
@@ -57,19 +47,13 @@ def main(argv):
         from eluno_pos.config import Settings
         from eluno_pos.api import serve
         settings = Settings.from_env()
-        child = None
-        if not _mock_up(settings.base_url):
-            port = settings.base_url.rsplit(":", 1)[-1]
-            child = subprocess.Popen([sys.executable, MOCK, "--port", port])
-            for _ in range(50):
-                if _mock_up(settings.base_url):
-                    break
-                time.sleep(0.1)
-        try:
-            serve(settings, int(os.environ.get("ELUNO_POS_API_PORT", "8000")))
-        finally:
-            if child:
-                child.terminate()
+        # Hosts like Render and Railway hand us PORT and expect us on all interfaces.
+        port = int(os.environ.get("PORT") or os.environ.get("ELUNO_POS_API_PORT") or "8000")
+        host = os.environ.get("ELUNO_POS_HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+        if os.environ.get("ELUNO_POS_BASE_URL"):  # a backend already exists (another mock, or the real systems)
+            serve(settings, port, host)
+        else:  # the hosted demo: own mock, 429/503 on, resettable from the screen
+            serve(settings, port, host, sandbox=True, flaky="--no-flake" not in argv and os.environ.get("ELUNO_POS_MOCK_FLAKY", "1") != "0")
         return 0
     if cmd == "pos":
         from eluno_pos.cli import main as cli

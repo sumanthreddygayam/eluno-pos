@@ -18,37 +18,75 @@
   GET  /reports/channels?date=2026-10-22        bills by channel, by store
   GET  /credit-notes/{credit_note_no}.txt         (URL-encode the slashes)
   GET  /audit?ref=&store=
+
+For the till screen (eluno_pos/web/, served at /):
+  GET  /meta                                    business date, channels, payment methods, reason codes
+  GET  /stores                                  billing stores
+  GET  /staff?store=HSR
+  GET  /catalog?store=HSR                       frames with stock here (Shopify count minus frames held by unfinished bills), lens matrix
+  GET  /bills?store=HSR&date=                   the store's bills for a day, newest first
+  GET  /holds?store=HSR                         frames reserved by bills being paid
+  GET  /refunds?store=HSR&date=
+  GET  /refunds/lookup?invoice_no=&store=       a bill to refund: lines, refunds so far (reads pre-cutover bills from Shopify)
+
+Hosted demo only (python run.py serve without ELUNO_POS_BASE_URL; see api/sandbox.py):
+  GET  /admin/sandbox                           mock failure mode, injected faults armed, recent fault log
+  POST /admin/faults   {"fault": name|"clear"}  arm a failure the mock cannot produce (declined card, dead terminal, ...)
+  POST /admin/reset    {"flaky"?: bool}         fresh mock + empty POS database
+
+Every response carries X-Eluno-Network: the upstream calls the request made, with status and any retry wait.
 """
 from __future__ import annotations
 
 import json
 import logging
+import mimetypes
+import os
 import re
+import threading
+import time
 import traceback
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
+from ..adapters.http import trace
 from ..app import PosApp
 from ..app.billing import BillRequest
 from ..config import Settings
 from ..domain.errors import DomainError, InvalidRequest, NotFound
+from ..domain.parties import CHANNELS
+from ..domain.refund import FAILED as REFUND_FAILED, refunded_line_refs
 from ..invoice_render import render_credit_note_text, render_html, render_text
 from ..ports import IntegrationError
 
 log = logging.getLogger("eluno_pos.api")
+WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
 
 class Api:
-    def __init__(self, app: PosApp):
-        self.app = app
+    def __init__(self, app: Optional[PosApp] = None, sandbox: Any = None):
+        self._app = app
+        self.sandbox = sandbox  # api.sandbox.Sandbox in the hosted demo; it owns (and can replace) the app
+        self._tls = threading.local()
         # Requests run in parallel (ThreadingHTTPServer): a customer approving UPI at one store must not make
         # another store wait. The database serialises its own transactions; BillingService locks per bill.
         self.routes: List[Tuple[str, "re.Pattern[str]", Callable]] = []
         r = self.routes
         for method, pattern, fn in [
             ("GET", r"/health", self.health),
+            ("GET", r"/meta", self.meta),
+            ("GET", r"/stores", self.stores),
+            ("GET", r"/staff", self.staff),
+            ("GET", r"/catalog", self.catalog),
+            ("GET", r"/bills", self.list_bills),
+            ("GET", r"/holds", self.holds),
+            ("GET", r"/refunds", self.list_refunds),
+            ("GET", r"/refunds/lookup", self.refund_lookup),
+            ("GET", r"/admin/sandbox", self.sandbox_status),
+            ("POST", r"/admin/faults", self.sandbox_fault),
+            ("POST", r"/admin/reset", self.sandbox_reset),
             ("GET", r"/customers/(?P<phone>[^/]+)", self.customer),
             ("POST", r"/quotes", self.quote),
             ("POST", r"/bills", self.create_bill),
@@ -69,6 +107,10 @@ class Api:
         ]:
             r.append((method, re.compile("^%s$" % pattern), fn))
 
+    @property
+    def app(self) -> PosApp:
+        return getattr(self._tls, "app", None) or self._app  # type: ignore[return-value]
+
     def dispatch(self, method: str, raw_path: str, body: Optional[dict]) -> Tuple[int, Any, str]:
         u = urlparse(raw_path)
         query = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -76,12 +118,115 @@ class Api:
             match = rx.match(u.path)
             if match and m == method:
                 params = {k: unquote(v) for k, v in match.groupdict().items()}
-                return fn(body or {}, query, **params)
+                if self.sandbox is None or u.path.startswith("/admin/"):
+                    return fn(body or {}, query, **params)
+                with self.sandbox.using() as app:  # a reset waits for this request to finish
+                    self._tls.app = app
+                    try:
+                        return fn(body or {}, query, **params)
+                    finally:
+                        self._tls.app = None
         raise NotFound("no route %s %s" % (method, u.path))
 
     # ------------------------------------------------------------ handlers
     def health(self, body, q):
         return 200, {"ok": True}, "json"
+
+    def meta(self, body, q):
+        a = self.app
+        return 200, {"business_date": a.clock.today().isoformat(), "now": a.clock.iso(), "channels": list(CHANNELS),
+                     "payment_methods": ["upi", "card", "cash"], "reason_codes": a.config.reason_codes,
+                     "offer_policy": a.config.setting("offer_policy", "best_for_customer"), "sandbox": self.sandbox is not None}, "json"
+
+    def stores(self, body, q):
+        return 200, {"stores": [{"store_code": s.store_code, "name": s.name, "address": s.address, "invoice_prefix": s.invoice_prefix,
+                                 "location_id": s.location_id} for s in self.app.directory.stores() if s.is_billing_store]}, "json"
+
+    def staff(self, body, q):
+        store = self.app.directory.store(_req(q, "store"))
+        return 200, {"staff": [{"staff_id": s.staff_id, "name": s.name, "role": s.role, "badges": list(s.badges),
+                                "can_override_discount": s.can_override_discount}
+                               for s in self.app.store_tool.staff(store.store_code)]}, "json"
+
+    def catalog(self, body, q):
+        """What the till can sell at a store right now. Stock is read live; frames being paid for elsewhere are subtracted."""
+        a = self.app
+        store = a.directory.store(_req(q, "store"))
+        cat = a.commerce.catalog()
+        frames = [f for f in cat.frames.values() if f.sellable]
+        items = [f.inventory_item_id for f in frames if f.inventory_item_id]
+        levels = a.commerce.stock_levels(items)
+        held = a.repo.holds([(i, store.location_id) for i in items])
+        others = {s.location_id: s.store_code for s in a.directory.stores() if s.is_billing_store and s.store_code != store.store_code}
+        out_frames = []
+        for f in sorted(frames, key=lambda f: f.sku):
+            key = (f.inventory_item_id, store.location_id)
+            in_shopify, on_hold = levels.get(key, 0), held.get(key, 0)
+            out_frames.append({"sku": f.sku, "title": f.title, "variant": f.variant_title, "description": f.description, "mrp": f.mrp,
+                               "category": f.category, "rx_able": f.rx_able, "in_shopify": in_shopify, "held": on_hold,
+                               "available": max(0, in_shopify - on_hold),
+                               "elsewhere": {code: levels[(f.inventory_item_id, loc)] for loc, code in others.items()
+                                             if levels.get((f.inventory_item_id, loc), 0) > 0}})
+        lenses = [{"code": "%s/%s/%s" % (l.lens_type, l.index, l.coating), "type": l.lens_type, "index": l.index, "coating": l.coating,
+                   "label": l.label, "mrp": l.mrp, "lab_tat_days": l.lab_tat_days,
+                   "limits": {"sph_min": l.limits.sph_min, "sph_max": l.limits.sph_max, "cyl_abs_max": l.limits.cyl_abs_max,
+                              "add_required": l.limits.add_required}}
+                  for l in sorted(cat.lenses.values(), key=lambda l: (l.lens_type, l.index, l.coating))]
+        return 200, {"store_code": store.store_code, "frames": out_frames, "lenses": lenses}, "json"
+
+    def list_bills(self, body, q):
+        a = self.app
+        store = a.directory.store(_req(q, "store"))
+        day = q.get("date") or a.clock.today().isoformat()
+        refunded: Dict[str, int] = {}
+        for r in a.repo.refunds(store_code=store.store_code):
+            if r.status != REFUND_FAILED:
+                refunded[r.bill_id] = refunded.get(r.bill_id, 0) + r.amount
+        bills = [b for b in a.repo.bills(store_code=store.store_code, business_date=day) if b.source == "eluno-pos"]
+        return 200, {"store_code": store.store_code, "date": day,
+                     "bills": [_bill_summary(b, refunded.get(b.bill_id, 0)) for b in reversed(bills)]}, "json"
+
+    def holds(self, body, q):
+        store = self.app.directory.store(_req(q, "store"))
+        return 200, {"holds": self.app.repo.hold_list(store.location_id)}, "json"
+
+    def list_refunds(self, body, q):
+        a = self.app
+        store = a.directory.store(_req(q, "store"))
+        day = q.get("date") or a.clock.today().isoformat()
+        return 200, {"refunds": [r.to_dict() for r in reversed(a.repo.refunds(store_code=store.store_code, day=day))]}, "json"
+
+    def refund_lookup(self, body, q):
+        a = self.app
+        store = a.directory.store(_req(q, "store"))
+        bill = a.refunds.find_bill(_req(q, "invoice_no").strip(), store)
+        refunds = a.repo.refunds(bill_id=bill.bill_id)
+        return 200, {"bill": bill.to_dict(), "refunds": [r.to_dict() for r in refunds],
+                     "refunded_line_refs": sorted(refunded_line_refs(refunds))}, "json"
+
+    # ------------------------------------------------------------ hosted demo
+    def _sandbox(self):
+        if self.sandbox is None:
+            raise NotFound("Not running as the hosted demo: there is no mock to control.", code="no_sandbox")
+        return self.sandbox
+
+    def sandbox_status(self, body, q):
+        return 200, self._sandbox().status(), "json"
+
+    def sandbox_fault(self, body, q):
+        sb = self._sandbox()
+        name = _req(body, "fault")
+        try:
+            sb.arm(name)
+        except KeyError:
+            raise InvalidRequest("Unknown fault %r." % name, code="bad_fault")
+        return 200, sb.status(), "json"
+
+    def sandbox_reset(self, body, q):
+        sb = self._sandbox()
+        flaky = body.get("flaky")
+        sb.reset(None if flaky is None else bool(flaky))
+        return 200, dict(sb.status(), cutover=sb.cutover), "json"
 
     def customer(self, body, q, phone):
         return 200, self.app.billing.lookup(phone), "json"
@@ -164,6 +309,14 @@ class Api:
         return 200, {"events": self.app.repo.audit_log(ref=q.get("ref"), store_code=q.get("store"), limit=int(q.get("limit", 100)))}, "json"
 
 
+def _bill_summary(b: Any, refunded: int) -> Dict[str, Any]:
+    return {"bill_id": b.bill_id, "status": b.status, "kind": b.kind, "invoice_no": b.invoice_no, "customer_name": b.customer_name,
+            "customer_phone": b.customer_phone, "staff_id": b.staff_id, "channel": b.channel, "total": b.total,
+            "payment_method": b.payment_method, "charge_id": b.charge_id, "shopify_order_name": b.shopify_order_name,
+            "created_at": b.created_at, "paid_at": b.paid_at, "last_error": b.last_error, "refunded": refunded,
+            "items": [l.description for l in b.lines]}
+
+
 def _req(d: Dict[str, Any], key: str) -> Any:
     if d.get(key) in (None, ""):
         raise InvalidRequest("%s is required" % key, code="missing_field")
@@ -177,9 +330,11 @@ def _bill_request(body: dict) -> BillRequest:
         raise InvalidRequest("bad bill request: %s" % e, code="bad_request")
 
 
-def make_handler(api: Api):
+def make_handler(api: Api, web_dir: Optional[str] = WEB):
     class Handler(BaseHTTPRequestHandler):
         server_version = "eluno-pos/1.0"
+        network: List[Dict[str, Any]] = []
+        started = 0.0
 
         def _respond(self, status: int, payload: Any, fmt: str = "json") -> None:
             if fmt == "json":
@@ -189,10 +344,14 @@ def make_handler(api: Api):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Eluno-Network", json.dumps(self.network[-40:]))
+            self.send_header("X-Eluno-Ms", str(int((time.monotonic() - self.started) * 1000)))
             self.end_headers()
             self.wfile.write(data)
 
         def _handle(self, method: str) -> None:
+            self.started, self.network = time.monotonic(), []
             body = None
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
@@ -200,18 +359,47 @@ def make_handler(api: Api):
                     body = json.loads(self.rfile.read(n) or b"{}")
                 except json.JSONDecodeError:
                     return self._respond(400, {"error": {"code": "bad_json", "message": "body is not valid JSON"}})
-            try:
-                status, payload, fmt = api.dispatch(method, self.path, body)
-                self._respond(status, payload, fmt)
-            except DomainError as e:
-                self._respond(e.http_status, {"error": e.to_dict()})
-            except IntegrationError as e:
-                self._respond(502, {"error": {"code": "upstream_error", "message": str(e), "retryable": e.retryable}})
-            except Exception as e:  # pragma: no cover - last resort, keep the till informed
-                log.error("unhandled error: %s\n%s", e, traceback.format_exc())
-                self._respond(500, {"error": {"code": "internal_error", "message": str(e)}})
+            with trace() as self.network:
+                try:
+                    status, payload, fmt = api.dispatch(method, self.path, body)
+                except DomainError as e:
+                    status, payload, fmt = e.http_status, {"error": e.to_dict()}, "json"
+                except IntegrationError as e:
+                    status, payload, fmt = 502, {"error": {"code": "upstream_error", "message": str(e), "retryable": e.retryable}}, "json"
+                except Exception as e:  # pragma: no cover - last resort, keep the till informed
+                    log.error("unhandled error: %s\n%s", e, traceback.format_exc())
+                    status, payload, fmt = 500, {"error": {"code": "internal_error", "message": str(e)}}, "json"
+            self._respond(status, payload, fmt)
+
+        def _static(self) -> bool:
+            """The till screen: / is index.html, /web/<file> its assets. Nothing outside web/ is served."""
+            if not web_dir or not os.path.isdir(web_dir):
+                return False
+            path = urlparse(self.path).path
+            if path == "/":
+                path = "/web/index.html"
+            if not path.startswith("/web/"):
+                return False
+            root = os.path.realpath(web_dir)
+            full = os.path.realpath(os.path.join(root, unquote(path[len("/web/"):])))
+            if not full.startswith(root + os.sep) or not os.path.isfile(full):
+                return False
+            with open(full, "rb") as f:
+                data = f.read()
+            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+            if ctype.startswith("text/") or ctype.endswith("javascript"):
+                ctype += "; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
 
         def do_GET(self) -> None:
+            if self._static():
+                return
             self._handle("GET")
 
         def do_POST(self) -> None:
@@ -223,21 +411,36 @@ def make_handler(api: Api):
     return Handler
 
 
-def serve(settings: Settings, port: int = 8000) -> None:
-    app = PosApp(settings)
-    print("Eluno POS API on http://127.0.0.1:%d  (backend %s, db %s)" % (port, settings.base_url, settings.db_path))
-    try:
-        for series, info in app.billing.cutover().items():
+def serve(settings: Settings, port: int = 8000, host: str = "127.0.0.1", sandbox: bool = False, flaky: bool = True) -> None:
+    """sandbox=True: the hosted demo. This process starts its own mock (429/503 on unless flaky=False) and can reset it.
+    sandbox=False: a till against an existing backend at settings.base_url."""
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    if sandbox:
+        from .sandbox import Sandbox
+        sb = Sandbox(settings, flaky=flaky)
+        api, closer = Api(sandbox=sb), sb.close
+        print("Eluno POS on http://%s:%d  (hosted-demo mode: own mock at %s, 429/503 %s, business date %s)" % (
+            shown, port, sb.mock.url, "on" if flaky else "off", sb.app.clock.today()))
+        for series, info in sb.cutover.items():
             print("  series %-22s last issued %05d" % (series, info["last"]))
-    except Exception as e:  # Shopify down at start-up: billing still refuses safely per store until it is back
-        print("  cutover check failed (%s); stores without an initialised series will refuse payment until it succeeds" % e)
-    for line in app.sync_pending():
-        print("  startup sync: " + line)
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(Api(app)))
+    else:
+        app = PosApp(settings)
+        api, closer = Api(app), app.close
+        print("Eluno POS on http://%s:%d  (backend %s, db %s)" % (shown, port, settings.base_url, settings.db_path))
+        try:
+            for series, info in app.billing.cutover().items():
+                print("  series %-22s last issued %05d" % (series, info["last"]))
+        except Exception as e:  # Shopify down at start-up: billing still refuses safely per store until it is back
+            print("  cutover check failed (%s); stores without an initialised series will refuse payment until it succeeds" % e)
+        for line in app.sync_pending():
+            print("  startup sync: " + line)
+    print("  till screen: http://%s:%d/" % (shown, port), flush=True)
+    server = ThreadingHTTPServer((host, port), make_handler(api))
+    server.daemon_threads = True
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
-        app.close()
+        closer()
