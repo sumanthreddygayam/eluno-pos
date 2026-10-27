@@ -458,3 +458,12 @@ tr.sub td { color: var(--muted); font-size: 12.5px; }
 .storetable tr.row-bad td:first-child { box-shadow: inset 3px 0 0 var(--critical); }
 .storetable tr.row-warn td:first-child { box-shadow: inset 3px 0 0 #e8a000; }
 .storetable tr.total td { background: var(--surface-2); font-size: 14px; }
+
+/* ---------------------------------------------------------------- new customer, new prescription */
+.formgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 8px; }
+.formgrid input[type=email] { grid-column: 1 / -1; }
+.rxform { margin-top: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 10px; }
+.rxform .row { margin: 0; }
+table.rxedit td { padding: 4px 8px 4px 0; border: 0; }
+table.rxedit th { border: 0; padding-right: 10px; }
+.rxin { width: 88px; text-align: right; font-variant-numeric: tabular-nums; }

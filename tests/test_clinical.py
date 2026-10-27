@@ -5,7 +5,7 @@ from eluno_pos.domain.cart import Cart, Pair, stock_issues, structural_issues
 from eluno_pos.domain.catalog import LensChoice
 from eluno_pos.domain.issues import BLOCK, CONFIRM, INFO, blocking
 from eluno_pos.domain.lens_rules import anomaly_flags, check_lens
-from eluno_pos.domain.prescription import EyeRx, Prescription, RxSelection, select_prescription
+from eluno_pos.domain.prescription import EyeRx, Prescription, RxSelection, add_months, check_new_prescription, select_prescription
 
 from .support import D, catalog, customer, prescriptions, staff, store
 
@@ -119,6 +119,33 @@ class CartChecks(unittest.TestCase):
         issues = stock_issues(self.cart((f, None)), levels, stores, held={(f.inventory_item_id, 70000002): 1})
         self.assertEqual(codes(issues), [("STOCK_HELD", BLOCK)])
         self.assertIn("reserved by a bill on another till", issues[0].message)
+
+
+class NewPrescription(unittest.TestCase):
+    """What the till checks before saving a prescription typed in at the counter."""
+
+    def check(self, od=EyeRx(-275, -50, 90, None), os=EyeRx(-250, 0, None, None), issued=TODAY, pd=62):
+        return check_new_prescription(od, os, issued, add_months(issued, 12), TODAY, pd)
+
+    def test_a_normal_prescription_passes(self):
+        self.assertEqual(self.check(), [])
+        self.assertEqual(self.check(od=EyeRx(-300, 0, None, 200), os=EyeRx(-275, 0, None, 200)), [])  # progressive
+
+    def test_typos_are_caught_with_the_eye_named(self):
+        problems = self.check(od=EyeRx(-280, -50, None, None), os=EyeRx(-2500, 0, None, 175))
+        self.assertIn("Right eye (OD): SPH -2.8 is not in 0.25 steps.", problems)
+        self.assertIn("Right eye (OD): an axis (1 to 180) is needed when there is cylinder.", problems)
+        self.assertIn("Left eye (OS): SPH -25.0 is outside +/-20.00.", problems)
+        self.assertIn("ADD is given for one eye only; give it for both eyes, or neither.", problems)
+
+    def test_dates_and_pd(self):
+        self.assertIn("The test date 2026-10-23 is after today.", self.check(issued=D("2026-10-23")))
+        self.assertTrue(any("expired on 2025-09-01" in p for p in self.check(issued=D("2024-09-01"))))
+        self.assertIn("PD 90.0 mm is outside 45 to 80 mm.", self.check(pd=90.0))
+
+    def test_validity_counts_calendar_months(self):
+        self.assertEqual(add_months(D("2026-01-31"), 1), D("2026-02-28"))
+        self.assertEqual(add_months(D("2026-10-22"), 12), D("2027-10-22"))
 
 
 if __name__ == "__main__":

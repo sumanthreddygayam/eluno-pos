@@ -271,6 +271,22 @@ class ShopifyAdmin:
         matches = [c for c in (d or {}).get("customers", []) if c.get("phone") == phone]
         return customer_from(matches[0]) if matches else None
 
+    def create_customer(self, first_name: str, last_name: str, phone: str, email: Optional[str], note: str) -> Customer:
+        """POST customers.json. A lost answer may mean Shopify created it, so look the phone up before trying again."""
+        payload = {"customer": {"first_name": first_name, "last_name": last_name, "phone": phone, "email": email or None,
+                                "note": note, "tags": "", "verified_email": False}}
+        last: Optional[Exception] = None
+        for _ in range(self.WRITE_ATTEMPTS):
+            try:
+                return customer_from(self.client.post(self.api + "customers.json", payload, idempotent=False)["customer"])
+            except AmbiguousWrite as e:
+                last = e
+                log.warning("customer create for %s ambiguous (%s); checking Shopify before retrying", phone, e)
+                found = self.find_customer_by_phone(phone)
+                if found:
+                    return found
+        raise IntegrationError("shopify", "could not create customer %s: %s" % (phone, last))
+
     def stores(self) -> List[Store]:
         if self._stores is None:
             self._stores = [store_from(l) for l in self.client.get(self.api + "locations.json")["locations"] if l.get("active", True)]

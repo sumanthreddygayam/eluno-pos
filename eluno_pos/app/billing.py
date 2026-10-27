@@ -143,7 +143,7 @@ class BillingService:
         p = normalize_phone(phone)
         c = self._remembered(("customer", p), lambda: self.commerce.find_customer_by_phone(p), fresh)
         if c is None:
-            raise NotFound("No customer with phone %s in Shopify. Register them in the store tool first." % p, code="customer_not_found")
+            raise NotFound("No customer with phone %s in Shopify. Add them as a new customer." % p, code="customer_not_found")
         return c
 
     def rx_selection(self, phone: str, fresh: bool = False) -> RxSelection:

@@ -63,9 +63,11 @@ function statusChip(status) {
 
 function errorBox(err, extra) {
   const issues = (err.details && err.details.issues) || [];
+  const problems = (err.details && err.details.problems) || [];
   return h("div", { class: "notice bad" },
-    h("b", { text: err.message || String(err) }),
+    h("b", { text: problems.length ? "Please check " + problems.length + " thing(s):" : err.message || String(err) }),
     issues.map((i) => h("div", { class: "hint" }, (i.pair_ref ? "Pair " + i.pair_ref + ": " : "") + i.message + (i.hint ? " " + i.hint : ""))),
+    problems.map((p) => h("div", { class: "hint", text: "• " + p })),
     extra || null);
 }
 
@@ -130,7 +132,7 @@ const S = {
   meta: null, stores: [], staff: [], store: null, staffId: null, catalog: null, sandbox: null,
   customer: null, pairs: [], channel: "walk_in", acks: new Set(), quote: null, quoteError: null, quoting: false,
   bill: null, payError: null, busy: null, lastPayMs: null, lastPayNet: [], step: 1,
-  picking: 0, frameSearch: "", frameFilter: "all", cash: null, cashGiven: null,
+  picking: 0, frameSearch: "", frameFilter: "all", cash: null, cashGiven: null, rxForm: null,
 };
 const newPair = () => ({ frame: "", lensType: "", index: "", coating: "", wearer: "" });
 const staffName = (id) => { const s = S.staff.find((x) => x.staff_id === id); return s ? s.name + " (" + id + ")" : id; };
@@ -275,7 +277,7 @@ function newBill() {
   if (S.bill && S.bill.status === "draft") discardDraft(S.bill);
   Object.assign(S, { customer: null, pairs: [newPair()], acks: new Set(), quote: null, quoteError: null, quoting: false, bill: null,
     payError: null, busy: null, lastPayMs: null, lastPayNet: [], channel: "walk_in", step: 1, picking: 0, frameSearch: "", frameFilter: "all",
-    cash: null, cashGiven: null });
+    cash: null, cashGiven: null, rxForm: null });
   $("#phone").value = "";
   $("#disc-pct").value = ""; $("#disc-approver").value = ""; $("#disc-reason").value = "";
   $("#discount-box").open = false;
@@ -312,7 +314,7 @@ async function lookup(phone) {
     $("#phone").value = S.customer.customer.phone.replace(/^\+91/, "");
   } catch (e) {
     S.customer = null;
-    put("#customer", errorBox(e));
+    put("#customer", e.code === "customer_not_found" ? newCustomerForm(phone) : errorBox(e));
     renderAll();
     return;
   }
@@ -344,10 +346,85 @@ function renderCustomer() {
         h("tr", {}, h("th", {}), h("th", { text: "SPH" }), h("th", { text: "CYL" }), h("th", { text: "AXIS" }), h("th", { text: "ADD" })),
         eye("R · OD", rx.od), eye("L · OS", rx.os)),
       rx.pd || rx.notes ? h("div", { class: "small muted", text: [rx.pd ? "PD " + rx.pd + " mm" : "", rx.notes || ""].filter(Boolean).join(" · ") }) : null)
-      : h("div", { class: "notice warn" }, h("b", { text: "No valid prescription on file." }), h("div", { class: "hint", text: "Frames and sunglasses can still be billed; a prescription lens can't." })),
+      : h("div", { class: "notice warn" }, h("b", { text: "No valid prescription on file." }), h("div", { class: "hint", text: "Frames and sunglasses can still be billed. For a prescription lens, add the prescription below." })),
     c.skipped_prescriptions.length ? h("details", { class: "small" }, h("summary", { text: c.skipped_prescriptions.length + " older prescription(s) not used" }),
       c.skipped_prescriptions.map((s) => h("div", { class: "muted", text: s.rx_id + ": " + s.reason }))) : null,
-    c.flags.map(issueNotice));
+    c.flags.map(issueNotice),
+    S.rxForm ? rxForm() : h("button", { type: "button", class: rx ? "ghost" : "", "data-add-rx": "1", text: "+ Add prescription",
+      onclick: () => { S.rxForm = { source: "in_store" }; renderCustomer(); } }));
+}
+
+// A customer the till doesn't know yet: create them in Shopify, then carry on with the bill.
+function newCustomerForm(phone) {
+  const first = h("input", { id: "nc-first", placeholder: "First name", autocomplete: "off" });
+  const last = h("input", { id: "nc-last", placeholder: "Last name", autocomplete: "off" });
+  const email = h("input", { id: "nc-email", type: "email", placeholder: "Email (optional, for the invoice)", autocomplete: "off" });
+  const msg = h("div", {});
+  const save = h("button", { type: "button", class: "primary", id: "nc-save", text: "Add customer", onclick: async () => {
+    save.disabled = true;
+    try {
+      S.customer = await api("POST", "/customers", { store_code: S.store, staff_id: S.staffId, phone, first_name: first.value, last_name: last.value, email: email.value || null }, "New customer");
+    } catch (e) { put(msg, errorBox(e)); save.disabled = false; return; }
+    $("#phone").value = S.customer.customer.phone.replace(/^\+91/, "");
+    toast(S.customer.customer.name + " added as a customer");
+    S.rxForm = null;
+    renderQuickPick(); renderCustomer(); renderPairs(); cartChanged();
+  } });
+  return h("div", { class: "newcust" },
+    h("div", { class: "custcard" }, h("div", { class: "avatar", text: "+" }),
+      h("div", { class: "grow" }, h("div", { class: "custname", text: "New customer" }), h("div", { class: "muted", text: "No one with " + phone + " yet. Add them to carry on." }))),
+    h("div", { class: "formgrid" }, first, last, email),
+    msg,
+    h("div", { class: "row" }, save));
+}
+
+// Recording a prescription: an eye test done here (signed off by the optometrist), or a paper one from elsewhere.
+function rxForm() {
+  const f = S.rxForm;
+  const optoms = S.staff.filter((s) => s.role === "optometrist");
+  const cell = (id, step, ph) => h("input", { id, type: "number", step, inputmode: "decimal", placeholder: ph || "", class: "rxin" });
+  const optom = h("select", { id: "rx-optom" });
+  options(optom, optoms.map((s) => [s.staff_id, s.name]), (S.staff.find((s) => s.staff_id === S.staffId && s.role === "optometrist") || optoms[0] || {}).staff_id);
+  const msg = h("div", {});
+  const val = (id) => { const v = document.getElementById(id).value; return v === "" ? null : v; };
+  const save = h("button", { type: "button", class: "primary", id: "rx-save", text: "Save prescription", onclick: async () => {
+    const eye = (k) => ({ sph: val("rx-" + k + "-sph"), cyl: val("rx-" + k + "-cyl"), axis: val("rx-" + k + "-axis"), add: val("rx-" + k + "-add") });
+    save.disabled = true;
+    try {
+      const out = await api("POST", "/customers/" + enc(S.customer.customer.phone) + "/prescriptions", {
+        store_code: S.store, staff_id: S.staffId, source: f.source, issued_on: val("rx-date"), od: eye("od"), os: eye("os"),
+        pd: val("rx-pd"), notes: val("rx-notes"), optometrist_id: f.source === "in_store" ? optom.value : null }, "Save prescription");
+      S.customer = out;
+      S.rxForm = null;
+      toast("Prescription " + out.recorded_rx_id + " saved to the store tool");
+    } catch (e) { put(msg, errorBox(e)); save.disabled = false; return; }
+    renderCustomer(); renderPairs(); cartChanged();
+  } });
+  return h("div", { class: "rxform" },
+    h("div", { class: "row spread" }, h("b", { text: "Add a prescription" }),
+      h("button", { type: "button", class: "ghost small", text: "Cancel", onclick: () => { S.rxForm = null; renderCustomer(); } })),
+    h("div", { class: "seg" }, [["in_store", "Eye test here"], ["external", "Paper from another optometrist"]].map(([k, label]) =>
+      h("button", { type: "button", class: f.source === k ? "on" : "", "data-source": k, text: label, onclick: () => {
+        const typed = [...document.querySelectorAll(".rxform input")].map((el) => [el.id, el.value]);  // keep what was typed
+        f.source = k;
+        renderCustomer();
+        typed.forEach(([id, v]) => { const el = document.getElementById(id); if (el) el.value = v; });
+      } }))),
+    h("div", { class: "row wrap" },
+      f.source === "in_store" ? h("label", { class: "field" }, "Optometrist", optom) : null,
+      h("label", { class: "field" }, "Test date", h("input", { id: "rx-date", type: "date", value: S.meta.business_date }))),
+    h("table", { class: "rx rxedit" },
+      h("tr", {}, h("th", {}), h("th", { text: "SPH" }), h("th", { text: "CYL" }), h("th", { text: "AXIS" }), h("th", { text: "ADD" })),
+      [["od", "R · OD"], ["os", "L · OS"]].map(([k, label]) => h("tr", {}, h("th", { text: label }),
+        h("td", {}, cell("rx-" + k + "-sph", "0.25", "0.00")), h("td", {}, cell("rx-" + k + "-cyl", "0.25", "0.00")),
+        h("td", {}, cell("rx-" + k + "-axis", "1", "1–180")), h("td", {}, cell("rx-" + k + "-add", "0.25", "–"))))),
+    h("div", { class: "row wrap" },
+      h("label", { class: "field" }, "PD (mm)", h("input", { id: "rx-pd", type: "number", step: "0.5", placeholder: "62", class: "rxin" })),
+      h("label", { class: "field grow" }, f.source === "external" ? "Who wrote it (doctor, clinic)" : "Notes",
+        h("input", { id: "rx-notes", placeholder: f.source === "external" ? "e.g. Dr Rao, Vision Clinic, Jayanagar" : "Optional" }))),
+    h("p", { class: "small muted", text: "Powers in 0.25 steps; an axis is needed with any cylinder; ADD for both eyes or neither. Valid for 12 months from the test date." }),
+    msg,
+    h("div", { class: "row" }, save));
 }
 
 // ------------------------------------------------------------------ pairs

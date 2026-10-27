@@ -2,6 +2,9 @@
 
   GET  /health
   GET  /customers/{phone}                       customer, flags, latest valid Rx, skipped Rx
+  POST /customers  {"store_code", "staff_id", "phone", "first_name", "last_name"?, "email"?}        new customer, in Shopify
+  POST /customers/{phone}/prescriptions  {"store_code", "staff_id", "source": "in_store|external", "issued_on"?,
+       "od": {"sph","cyl","axis","add"}, "os": {...}, "pd"?, "notes"?, "optometrist_id"?}         checked, then saved in the store tool
   POST /quotes                                  price a cart (BillRequest JSON); nothing saved
   POST /bills                                   create a draft bill; add "pay": "upi|card|cash" to pay at once
   GET  /bills/{bill_id}
@@ -89,6 +92,8 @@ class Api:
             ("POST", r"/admin/faults", self.sandbox_fault),
             ("POST", r"/admin/reset", self.sandbox_reset),
             ("GET", r"/customers/(?P<phone>[^/]+)", self.customer),
+            ("POST", r"/customers", self.create_customer),
+            ("POST", r"/customers/(?P<phone>[^/]+)/prescriptions", self.add_prescription),
             ("POST", r"/quotes", self.quote),
             ("POST", r"/bills", self.create_bill),
             ("GET", r"/bills/(?P<bill_id>[\w-]+)", self.get_bill),
@@ -232,6 +237,16 @@ class Api:
 
     def customer(self, body, q, phone):
         return 200, self.app.billing.lookup(phone), "json"
+
+    def create_customer(self, body, q):
+        c = self.app.customers.register(_req(body, "store_code"), _req(body, "staff_id"), body.get("first_name", ""), body.get("last_name", ""),
+                                        _req(body, "phone"), body.get("email"))
+        return 201, self.app.billing.lookup(c.phone), "json"
+
+    def add_prescription(self, body, q, phone):
+        rx = self.app.customers.add_prescription(_req(body, "store_code"), _req(body, "staff_id"), phone, _req(body, "source"), body.get("issued_on"),
+                                                 _req(body, "od"), _req(body, "os"), body.get("pd"), body.get("notes"), body.get("optometrist_id"))
+        return 201, dict(self.app.billing.lookup(rx.phone), recorded_rx_id=rx.rx_id), "json"
 
     def quote(self, body, q):
         return 200, self.app.billing.quote(_bill_request(body)).to_dict(), "json"

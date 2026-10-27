@@ -14,6 +14,7 @@ from ..config import BusinessConfig, Settings
 from ..domain.bill import PAID, PAYMENT_PENDING
 from .billing import BillingService
 from .common import Audit, Clock, Directory, PinnedDateClock
+from .customers import CustomerService
 from .refunds import RefundService
 from .remakes import RemakeService
 from .reports import ReportService
@@ -42,6 +43,7 @@ class PosApp:
         self.refunds = RefundService(self.commerce, self.terminal, self.repo, self.config, self.directory, self.clock, self.audit, self.billing)
         self.remakes = RemakeService(self.commerce, self.store_tool, self.repo, self.config, self.directory, self.clock, self.audit,
                                      self.billing, self.refunds)
+        self.customers = CustomerService(self.commerce, self.store_tool, self.config, self.directory, self.clock, self.audit, self.billing)
         self.tills = TillService(self.repo, self.config, self.directory, self.clock, self.audit)
         self.reports = ReportService(self.commerce, self.repo, self.config, self.directory)
 

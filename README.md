@@ -21,7 +21,7 @@ One process runs the till screen, the till API and its own copy of the mock, wit
 
 | Tab | What it does |
 |---|---|
-| **New bill** | Look up the customer by mobile number: flags (priority, campaign), the prescription in use, and why older ones were skipped. Add one or more pairs: frame (live stock here, and which stores have it), lens type, index and coating, and optionally a different wearer (family bill). Channel, manager's discount with approver and reason. The price re-checks on every change: GST per line, offers applied, why the others weren't, and the checks (red blocks the bill, amber needs a tick). Pay by UPI, card or cash. |
+| **New bill** | Look up the customer by mobile number: flags (priority, campaign), the prescription in use, and why older ones were skipped. A number the till doesn't know becomes a new customer (created in Shopify). A prescription can be added: an eye test here, signed off by the optometrist, or a paper one from another optometrist, with who wrote it. The till checks it first: 0.25 steps, ranges, an axis with any cylinder, ADD for both eyes or neither, PD, date. It is saved in the store tool and used for the bill straight away. Add one or more pairs: frame (live stock here, and which stores have it), lens type, index and coating, and optionally a different wearer (family bill). Channel, manager's discount with approver and reason. The price re-checks on every change: GST per line, offers applied, why the others weren't, and the checks (red blocks the bill, amber needs a tick). Pay by UPI, card or cash. |
 | **Bills today** | Every bill with its status, retry, cancel or void, the invoice, a refund shortcut, and each bill's audit history. Frames reserved by unfinished bills. |
 | **Refund** | Find an invoice (older invoices are read from Shopify), tick lines, give a reason; money goes back the way it came, the credit note is issued, and the frame goes back on the shelf. |
 | **Cash drawer** | Open with a float, paid in and out with reasons, count and close: shows the variance and flags it to finance when over the limit. |
@@ -69,7 +69,7 @@ python run.py demo      # 18 feature steps, the business day and the two-tills s
 python run.py day       # just the business day: five orders across all seven stores, end to end, with day-end totals
 python run.py race      # just the two-tills scenario: one last frame, two tills 1 s apart, second by second
 python run.py bench     # checkout time per step, retries, many tills at once, Wi-Fi trouble (see docs/CHECKOUT_TIMING.md)
-python run.py test      # 108 unit + integration tests (the integration ones run against the mock with 429/503 on)
+python run.py test      # 114 unit + integration tests (the integration ones run against the mock with 429/503 on)
 ```
 
 `demo` pins the business date to 2026-10-22, the date the seed data is built around, so the output is the
@@ -176,7 +176,7 @@ The decisions most worth reading:
 
 ## Tests
 
-`python run.py test` runs 108 tests in about 45 seconds:
+`python run.py test` runs 114 tests in about 45 seconds:
 
 * **Tax**: every line of the 12 seed orders back-computed to the paisa; rates by date; a rate change is a data change.
 * **Offers**: stacking vs priority, caps, dates, conditions, second-pair tie-break, manual override rules, offers-as-data, malformed offers rejected.
@@ -214,8 +214,9 @@ with the mock's 429/503 on and no console errors.
 * **Deployment:** SQLite on one node. With several tills on different machines, the same repository interface
   goes on a central Postgres, and `sync` runs on a timer (today it runs on start-up and on demand). The hosted
   demo has no sign-in: anyone with the link can bill, and reset it.
-* **Out of scope per the brief:** e-invoicing (IRN), printer hardware, catalog search UI, customer and
-  prescription creation.
+* **Out of scope per the brief:** e-invoicing (IRN), printer hardware. Customer and prescription creation were
+  out of scope too; they are now built, against write endpoints added to the mock (below). In production they need
+  Shopify's customer write scope and a prescription write API in the store tool.
 
 ## Where AI tools helped, and where they misled me
 
@@ -261,7 +262,13 @@ The lesson I took: it's very fast, but nothing it says is true until a test, a m
 
 ## Changes to the starter kit
 
-The starter kit is in `starter-kit/` so that one clone runs. One change: `mock_server.py` has an optional
-`--today YYYY-MM-DD` flag that pins the date it stamps on orders (in IST, so the demo gives the same result in
-any timezone), for reproducible demos and tests. Without the flag it behaves exactly as shipped. POS-owned data (tax rates, offers) is copied to `config/`, with
-`reason_codes.json` and `pos_settings.json` added.
+The starter kit is in `starter-kit/` so that one clone runs. Changes to `mock_server.py`, each marked
+"eluno-pos addition" in the file:
+
+* `--today YYYY-MM-DD` pins the date it stamps on orders (in IST, so the demo gives the same result in any
+  timezone), for reproducible demos and tests. Without the flag it behaves as shipped.
+* `POST /admin/api/2026-10/customers.json` creates a customer, the way Shopify does (422 if the phone is
+  already taken; writes can 429 like the others).
+* `POST /smt/prescriptions` records a prescription in the store tool and gives it the next RX number.
+
+POS-owned data (tax rates, offers) is copied to `config/`, with `reason_codes.json` and `pos_settings.json` added.

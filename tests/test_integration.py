@@ -18,7 +18,7 @@ from eluno_pos.app.billing import BillRequest, PairRequest
 from eluno_pos.config import Settings
 from eluno_pos.devtools import FaultInjector, MockServer, free_port
 from eluno_pos.domain.bill import DRAFT, PAID, SYNCED, VOIDED
-from eluno_pos.domain.errors import BillBlocked, NotFound, PaymentFailed, StateConflict
+from eluno_pos.domain.errors import BillBlocked, InvalidRequest, NotFound, PaymentFailed, PermissionDenied, StateConflict
 from eluno_pos.domain.money import to_decimal_str
 
 DAY = "2026-10-22"
@@ -497,6 +497,44 @@ class HttpApi(MockTestCase):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen("http://127.0.0.1:%d%s" % (self.port, path))
             self.assertEqual(e.exception.code, 404)
+
+
+class NewCustomerAtTheCounter(MockTestCase):
+    def test_register_record_a_prescription_and_bill(self):
+        api = Api(self.app)
+        phone = "+919000000099"
+        with self.assertRaises(NotFound):
+            api.dispatch("GET", "/customers/%s" % phone, None)
+        out = api.dispatch("POST", "/customers", {"store_code": "HSR", "staff_id": "S105", "phone": "9000000099",
+                                                  "first_name": "Meera", "last_name": "Das"})[1]
+        self.assertEqual((out["customer"]["name"], out["customer"]["phone"], out["prescription"]), ("Meera Das", phone, None))
+        with self.assertRaises(StateConflict):  # the same phone twice
+            api.dispatch("POST", "/customers", {"store_code": "HSR", "staff_id": "S105", "phone": phone, "first_name": "Meera"})
+
+        rx = {"store_code": "HSR", "staff_id": "S105", "source": "in_store", "od": {"sph": -2.25, "cyl": -0.5, "axis": 180}, "os": {"sph": -2.0}, "pd": 63}
+        with self.assertRaises(PermissionDenied):  # a salesperson can't sign off an eye test
+            api.dispatch("POST", "/customers/%s/prescriptions" % phone, rx)
+        with self.assertRaises(InvalidRequest) as bad:
+            api.dispatch("POST", "/customers/%s/prescriptions" % phone, dict(rx, optometrist_id="S107", os={"sph": -2.1}))
+        self.assertEqual(bad.exception.details["problems"], ["Left eye (OS): SPH -2.1 is not in 0.25 steps."])
+        out = api.dispatch("POST", "/customers/%s/prescriptions" % phone, dict(rx, optometrist_id="S107"))[1]
+        self.assertEqual((out["prescription"]["rx_id"], out["prescription"]["od"]["axis"], out["prescription"]["source"]),
+                         (out["recorded_rx_id"], 180, "in_store"))
+        self.assertEqual(self.app.repo.audit_log(ref=out["recorded_rx_id"])[0]["action"], "prescription.recorded")
+
+        # straight into a bill: a single vision lens against the prescription just recorded
+        bill = self.sell(BillRequest("HSR", "S105", phone, "walk_in", (PairRequest("FR-0003", "single_vision/1.60/anti_reflective"),)), "card")
+        self.assertEqual(bill.status, SYNCED)
+        self.assertEqual(bill.line("1L").rx_id, out["recorded_rx_id"])
+
+    def test_paper_prescription_from_another_optometrist(self):
+        api = Api(self.app)
+        body = {"store_code": "HSR", "staff_id": "S105", "source": "external", "issued_on": "2026-10-01",
+                "od": {"sph": 1.5, "add": 2.0}, "os": {"sph": 1.25, "add": 2.0}}
+        with self.assertRaises(InvalidRequest):  # who wrote it?
+            api.dispatch("POST", "/customers/+919000000014/prescriptions", body)
+        out = api.dispatch("POST", "/customers/+919000000014/prescriptions", dict(body, notes="Dr Rao, Vision Clinic"))[1]
+        self.assertEqual((out["prescription"]["source"], out["prescription"]["od"]["add"]), ("external", 200))
 
 
 class AllStoresReport(MockTestCase):

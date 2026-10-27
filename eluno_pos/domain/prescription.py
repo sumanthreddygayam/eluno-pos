@@ -1,9 +1,10 @@
-"""Prescriptions come from the store tool. The till never edits one; it decides whether one is usable."""
+"""Prescriptions live in the store tool. The till never edits one: it decides whether one is usable, and it can
+record a new one (an eye test here, or a paper prescription from another optometrist) after checking it."""
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional, Tuple
 
 from .optics import cd_to_float
@@ -91,3 +92,51 @@ def select_prescription(rxs: List[Prescription], today: date) -> RxSelection:
         else:
             return RxSelection(chosen=rx, history=tuple(r for r in ordered if r.issued_on <= today), skipped=tuple(skipped))
     return RxSelection(chosen=None, history=tuple(r for r in ordered if r.issued_on <= today), skipped=tuple(skipped))
+
+
+# ------------------------------------------------------------------ recording a new prescription
+RX_SOURCES = ("in_store", "external")
+SPH_LIMIT, CYL_LIMIT = 2000, 800          # +/-20.00 D sphere, +/-8.00 D cylinder: beyond these it is a typo, not a prescription
+ADD_MIN, ADD_MAX = 50, 400                # reading addition +0.50 to +4.00 D
+PD_MIN, PD_MAX = 45, 80                   # binocular pupillary distance, mm
+
+
+def add_months(d: date, months: int) -> date:
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    month_end = (date(y + m // 12, m % 12 + 1, 1) - timedelta(days=1)).day
+    return date(y, m, min(d.day, month_end))
+
+
+def check_new_prescription(od: EyeRx, os: EyeRx, issued_on: date, valid_until: date, today: date, pd: Optional[float]) -> List[str]:
+    """Everything wrong with a prescription typed in at the till, as messages a person can act on. Empty = fine.
+
+    Powers are in centi-dioptres (to_cd). The lab works in 0.25 D steps, so anything else is a typo."""
+    problems: List[str] = []
+    for name, e in (("Right eye (OD)", od), ("Left eye (OS)", os)):
+        if e.sph % 25:
+            problems.append("%s: SPH %s is not in 0.25 steps." % (name, cd_to_float(e.sph)))
+        if abs(e.sph) > SPH_LIMIT:
+            problems.append("%s: SPH %s is outside +/-20.00." % (name, cd_to_float(e.sph)))
+        if e.cyl % 25:
+            problems.append("%s: CYL %s is not in 0.25 steps." % (name, cd_to_float(e.cyl)))
+        if abs(e.cyl) > CYL_LIMIT:
+            problems.append("%s: CYL %s is outside +/-8.00." % (name, cd_to_float(e.cyl)))
+        if e.cyl and e.axis is None:
+            problems.append("%s: an axis (1 to 180) is needed when there is cylinder." % name)
+        if e.axis is not None and not 1 <= e.axis <= 180:
+            problems.append("%s: axis %s must be between 1 and 180." % (name, e.axis))
+        if e.add is not None:
+            if e.add % 25:
+                problems.append("%s: ADD %s is not in 0.25 steps." % (name, cd_to_float(e.add)))
+            if not ADD_MIN <= e.add <= ADD_MAX:
+                problems.append("%s: ADD %s is outside +0.50 to +4.00." % (name, cd_to_float(e.add)))
+    if (od.add is None) != (os.add is None):
+        problems.append("ADD is given for one eye only; give it for both eyes, or neither.")
+    if pd is not None and not PD_MIN <= pd <= PD_MAX:
+        problems.append("PD %s mm is outside %d to %d mm." % (pd, PD_MIN, PD_MAX))
+    if issued_on > today:
+        problems.append("The test date %s is after today." % issued_on)
+    elif valid_until < today:
+        problems.append("A prescription from %s expired on %s; it can't be used for a new pair. Book an eye test." % (issued_on, valid_until))
+    return problems
