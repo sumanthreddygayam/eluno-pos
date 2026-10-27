@@ -8,6 +8,46 @@ drawer, the audit trail and day-end reporting.
 Python 3.8+, standard library only. Nothing to install, no account, no internet needed: the demo starts its
 own local copy of the Shopify / store-tool / terminal mock and stops it at the end.
 
+**Live till screen:** LIVE_URL_HERE (free tier: the first visit after a quiet spell takes up to a minute to wake up).
+
+## The till screen
+
+```bash
+python run.py serve     # then open http://127.0.0.1:8000 in a browser
+```
+
+One process runs the till screen, the till API and its own copy of the mock, with the mock's 429/503 failures
+**on**. The same thing runs on the hosted link. A salesperson can run the whole Must flow from a laptop or a tablet:
+
+| Tab | What it does |
+|---|---|
+| **New bill** | Look up the customer by mobile number: flags (priority, campaign), the prescription in use, and why older ones were skipped. Add one or more pairs: frame (live stock here, and which stores have it), lens type, index and coating, and optionally a different wearer (family bill). Channel, manager's discount with approver and reason. The price re-checks on every change: GST per line, offers applied, why the others weren't, and the checks (red blocks the bill, amber needs a tick). Pay by UPI, card or cash. |
+| **Bills today** | Every bill with its status, retry, cancel or void, the invoice, a refund shortcut, and each bill's audit history. Frames reserved by unfinished bills. |
+| **Refund** | Find an invoice (older invoices are read from Shopify), tick lines, give a reason; money goes back the way it came, the credit note is issued, and the frame goes back on the shelf. |
+| **Cash drawer** | Open with a float, paid in and out with reasons, count and close: shows the variance and flags it to finance when over the limit. |
+| **Day-end** | The store's day from Shopify, checked against the till's invoices, credit notes and drawer; bills by channel for all stores. |
+| **Demo controls** | Hosted demo only. Turns the mock's 429/503 on or off, resets to the seed data, and arms failures the mock can't produce: a declined card, a card machine that stops answering, a customer slow to approve UPI, Wi-Fi dropping Shopify's answer, Shopify refusing orders. It also lists sample customers and things to try. |
+
+Every payment outcome is handled on screen:
+- **declined:** nothing charged, the frame stays reserved; pay another way or cancel.
+- **card machine not answering:** retrying is safe and can't charge twice; only a manager can cancel.
+- **paid but Shopify unreachable:** the invoice is issued and the order is sent later.
+
+The **Network** bar at the bottom lists every Shopify, store-tool and terminal call each action made, including
+each 429 or 503 and the retry that absorbed it.
+
+`python run.py serve --no-flake` turns the mock's failures off. With `ELUNO_POS_BASE_URL` set, `serve` skips its
+own mock and runs against that backend instead (no demo controls).
+
+### Hosting it (free)
+
+* **Render:** Dashboard → New → Blueprint → pick this repository. `render.yaml` sets up one free web service
+  (`python run.py serve`, health check `/health`). Nothing to build.
+* **Railway, Fly.io, Koyeb:** deploy the `Dockerfile`. The server listens on the platform's `PORT`.
+
+Free tiers sleep when idle and start fresh: a restart (or **Reset** on the Demo tab) brings back the seed data,
+with no bills. The business date is today's date in India (`ELUNO_POS_BUSINESS_DATE` pins it).
+
 ## Run it
 
 Clone or download the ZIP, open a terminal in the folder, and run:
@@ -28,7 +68,7 @@ python run.py demo      # 18 feature steps, the business day and the two-tills s
 python run.py day       # just the business day: five orders across all seven stores, end to end, with day-end totals
 python run.py race      # just the two-tills scenario: one last frame, two tills 1 s apart, second by second
 python run.py bench     # checkout time per step, retries, many tills at once, Wi-Fi trouble (see docs/CHECKOUT_TIMING.md)
-python run.py test      # 103 unit + integration tests (the integration ones run against the mock with 429/503 on)
+python run.py test      # 107 unit + integration tests (the integration ones run against the mock with 429/503 on)
 ```
 
 `demo` pins the business date to 2026-10-22, the date the seed data is built around, so the output is the
@@ -75,7 +115,7 @@ python -m eluno_pos invoice ELU/HSR/FY26/00003
 python -m eluno_pos refund ELU/HSR/FY26/00003 --store HSR --staff S105 --reason CHANGED_MIND [--lines 1F]
 python -m eluno_pos day-end --store HSR [--date 2026-10-22] [--json]
 python -m eluno_pos -h                               # all commands: till, remake, void, sync, channels, audit, ...
-python run.py serve                                  # JSON HTTP API on :8000 (starts the mock if it is not up)
+ELUNO_POS_BASE_URL=http://127.0.0.1:8787 python run.py serve   # till screen + API on :8000 against that mock
 ```
 
 Family billing adds `wearer=` to a pair: `--pair frame=FR-0014,lens=single_vision/1.50/anti_reflective,wearer=9000000010`.
@@ -135,7 +175,7 @@ The decisions most worth reading:
 
 ## Tests
 
-`python run.py test` runs 103 tests in about 30 seconds:
+`python run.py test` runs 107 tests in about 45 seconds:
 
 * **Tax**: every line of the 12 seed orders back-computed to the paisa; rates by date; a rate change is a data change.
 * **Offers**: stacking vs priority, caps, dates, conditions, second-pair tie-break, manual override rules, offers-as-data, malformed offers rejected.
@@ -152,7 +192,13 @@ The decisions most worth reading:
   * a refund that survives a lost response and an outage;
   * cash with the till;
   * family billing, a pre-cutover refund, a remake;
-  * the HTTP API.
+  * the HTTP API: parallel stores, a double-clicked Pay charging once, the till screen's endpoints (live stock
+    minus reserved frames, refundable lines), the per-request network trace, static files without path traversal;
+  * the hosted demo: Shopify refusing orders then syncing, and reset to the seed.
+
+The till screen itself was driven end to end in headless Chrome at laptop and tablet widths (lookup, offers,
+declined card then UPI, Shopify outage then sync, two tills on the last frame, refund, cash drawer, day-end)
+with the mock's 429/503 on and no console errors.
 
 ## Known gaps and what's next
 
@@ -165,7 +211,8 @@ The decisions most worth reading:
 * **Mock limits:** the mock has no cursor pagination. The adapter follows `Link` headers, but that path is only
   unit-tested. Shopify is steering new apps to the GraphQL Admin API; behind the port that is an adapter change.
 * **Deployment:** SQLite on one node. With several tills on different machines, the same repository interface
-  goes on a central Postgres, and `sync` runs on a timer (today it runs on start-up and on demand).
+  goes on a central Postgres, and `sync` runs on a timer (today it runs on start-up and on demand). The hosted
+  demo has no sign-in: anyone with the link can bill, and reset it.
 * **Out of scope per the brief:** e-invoicing (IRN), printer hardware, catalog search UI, customer and
   prescription creation.
 
@@ -200,6 +247,14 @@ measurement or the seed files.
 * **Policies.** It released a frame immediately when a card was declined; I changed the rule so the frame stays
   reserved until the bill is paid or cancelled. Its first stakeholder reply restated the brief to Priya; I
   rewrote it around real decisions and real payment-method timings.
+* **The till screen (Round 2).** It wrote the screen quickly, but reading the code didn't show the problems; driving
+  it in a real browser did:
+  * after a finished sale, the customer box stayed locked until "Next customer" was pressed;
+  * error messages showed raw mock URLs;
+  * the payment time was labelled "the till's part" even when it included the customer approving UPI.
+
+  One "bug" it reported, an order that never synced after a Shopify outage, was its own test script checking too
+  early. The bill's audit trail showed the order had synced.
 
 The lesson I took: it's very fast, but nothing it says is true until a test, a measurement or the data agrees.
 

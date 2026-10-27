@@ -1,0 +1,19 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> this repo. One free web service runs the till screen,
+# the till API and the starter-kit mock (429/503 on). Nothing to install: Python standard library only.
+services:
+  - type: web
+    name: eluno-pos
+    runtime: python
+    plan: free
+    buildCommand: python --version
+    startCommand: python run.py serve
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # - key: ELUNO_POS_MOCK_FLAKY      # "0" turns the mock's 429/503 off (it can also be switched from the screen)
+      #   value: "1"
+      # - key: ELUNO_POS_BUSINESS_DATE   # pin the calendar date (YYYY-MM-DD); default is today's date in India
+      #   value: "2026-10-22"
