@@ -4,23 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eluno Till</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/web/app.css">
 </head>
 <body>
-<header class="appbar">
-  <div class="brand">
-    <svg viewBox="0 0 64 28" aria-hidden="true"><circle cx="16" cy="14" r="10"/><circle cx="48" cy="14" r="10"/><path d="M26 12q6-5 12 0"/></svg>
-    <b>eluno</b><span>till</span>
+<nav class="rail" id="tabs">
+  <div class="logo" title="Eluno till">e</div>
+  <button data-tab="bill" class="active"><span class="ico" data-icon="bill"></span><span>New bill</span></button>
+  <button data-tab="bills"><span class="ico" data-icon="list"></span><span>Bills today</span></button>
+  <button data-tab="refund"><span class="ico" data-icon="refund"></span><span>Refund</span></button>
+  <button data-tab="till"><span class="ico" data-icon="drawer"></span><span>Cash drawer</span></button>
+  <button data-tab="dayend"><span class="ico" data-icon="chart"></span><span>Day-end</span></button>
+  <button data-tab="demo" id="demo-tab" hidden><span class="ico" data-icon="sliders"></span><span>Demo</span></button>
+</nav>
+
+<div class="shell">
+<header class="topbar">
+  <div class="title">
+    <h1 id="page-title">New bill</h1>
+    <span class="muted small">Eluno till</span>
   </div>
-  <nav class="tabs" id="tabs">
-    <button data-tab="bill" class="active"><span class="ico" data-icon="bill"></span>New bill</button>
-    <button data-tab="bills"><span class="ico" data-icon="list"></span>Bills today</button>
-    <button data-tab="refund"><span class="ico" data-icon="refund"></span>Refund</button>
-    <button data-tab="till"><span class="ico" data-icon="drawer"></span>Cash drawer</button>
-    <button data-tab="dayend"><span class="ico" data-icon="chart"></span>Day-end</button>
-    <button data-tab="demo" id="demo-tab" hidden><span class="ico" data-icon="sliders"></span>Demo</button>
-  </nav>
-  <div class="appbar-right">
+  <div class="topbar-right">
     <label class="pill"><span>Store</span><select id="store"></select></label>
     <label class="pill"><span>Staff</span><select id="staff"></select></label>
     <div class="clock"><b id="clock"></b><span id="bizdate"></span></div>
@@ -190,6 +195,7 @@
     </div>
   </section>
 </main>
+</div>
 
 <aside id="netlog" class="netlog collapsed">
   <button id="netlog-toggle" class="netlog-head">

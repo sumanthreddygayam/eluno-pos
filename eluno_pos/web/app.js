@@ -212,7 +212,10 @@ async function onStoreChange() {
   if (active !== "bill") showTab(active);
 }
 
+const PAGE_TITLE = { bill: "New bill", bills: "Bills today", refund: "Refund", till: "Cash drawer", dayend: "Day-end report", demo: "Demo controls" };
+
 function showTab(name) {
+  $("#page-title").textContent = PAGE_TITLE[name] || "";
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + name));
   if (name === "bills") loadBills();
@@ -814,7 +817,7 @@ function renderTicket() {
   const q = S.quote;
   const staff = S.staff.find((s) => s.staff_id === S.staffId);
   const chosen = S.pairs.filter((p) => p.frame || p.lensType);
-  const head = h("div", { class: "t-head" }, h("span", { text: "Bill" }), h("span", { class: "muted small grow", text: S.store + (staff ? " · " + staff.name : "") }),
+  const head = h("div", { class: "t-head" }, h("span", { text: "Cart" }), h("span", { class: "muted small grow", text: S.store + (staff ? " · " + staff.name : "") }),
     c && !lookupLocked() && S.step < 5 ? h("button", { type: "button", class: "ghost small", "data-startover": "1", text: "Start over",
       onclick: () => { if (confirm("Drop this bill and start again?")) newBill(); } }) : null);
   if (!c) {
