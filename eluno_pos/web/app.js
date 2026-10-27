@@ -128,8 +128,8 @@ function renderNet() {
 // ------------------------------------------------------------------ state
 const S = {
   meta: null, stores: [], staff: [], store: null, staffId: null, catalog: null, sandbox: null,
-  customer: null, pairs: [], channel: "walk_in", acks: new Set(), quote: null, quoteError: null,
-  bill: null, payError: null, busy: null, lastPayMs: null, lastPayNet: [],
+  customer: null, pairs: [], channel: "walk_in", acks: new Set(), quote: null, quoteError: null, quoting: false,
+  bill: null, payError: null, busy: null, lastPayMs: null, lastPayNet: [], step: 1,
 };
 const newPair = () => ({ frame: "", lensType: "", index: "", coating: "", wearer: "" });
 const staffName = (id) => { const s = S.staff.find((x) => x.staff_id === id); return s ? s.name + " (" + id + ")" : id; };
@@ -211,6 +211,10 @@ function showTab(name) {
 // ================================================================== NEW BILL
 function wireBill() {
   $("#lookup-form").addEventListener("submit", (e) => { e.preventDefault(); lookup($("#phone").value); });
+  $("#to-2").addEventListener("click", () => go(2));
+  $("#to-3").addEventListener("click", () => go(3));
+  $("#to-4").addEventListener("click", () => go(4));
+  document.querySelectorAll("#tab-bill [data-go]").forEach((b) => b.addEventListener("click", () => go(+b.dataset.go)));
   $("#add-pair").addEventListener("click", () => { S.pairs.push(newPair()); renderPairs(); });
   $("#refresh-stock").addEventListener("click", async () => { await loadCatalog(); scheduleQuote(); });
   $("#channel").addEventListener("change", () => { S.channel = $("#channel").value; cartChanged(); });
@@ -223,8 +227,8 @@ function wireBill() {
 
 function newBill() {
   if (S.bill && S.bill.status === "draft") discardDraft(S.bill);
-  Object.assign(S, { customer: null, pairs: [newPair()], acks: new Set(), quote: null, quoteError: null, bill: null, payError: null,
-    busy: null, lastPayMs: null, lastPayNet: [], channel: "walk_in" });
+  Object.assign(S, { customer: null, pairs: [newPair()], acks: new Set(), quote: null, quoteError: null, quoting: false, bill: null,
+    payError: null, busy: null, lastPayMs: null, lastPayNet: [], channel: "walk_in", step: 1 });
   $("#phone").value = "";
   $("#channel").value = "walk_in";
   $("#disc-pct").value = ""; $("#disc-approver").value = ""; $("#disc-reason").value = "";
@@ -258,6 +262,7 @@ async function lookup(phone) {
   }
   renderCustomer();
   cartChanged();
+  $("#to-2").focus();
 }
 
 function renderCustomer() {
@@ -375,22 +380,25 @@ function cartChanged() {
 
 function scheduleQuote() {
   clearTimeout(quoteTimer);
+  S.quoting = true;  // the Continue buttons wait for the new price
   quoteTimer = setTimeout(runQuote, 300);
+  renderAll();
 }
 
 async function runQuote() {
-  if (cartLocked()) return;
+  if (cartLocked()) { S.quoting = false; return; }
   const req = billRequest();
-  if (!S.customer || !req.pairs.length) { S.quote = null; S.quoteError = null; renderAll(); return; }
+  if (!S.customer || !req.pairs.length) { S.quote = null; S.quoteError = null; S.quoting = false; renderAll(); return; }
   const md = req.manual_discount;
   if (md && (!md.approver_id || !md.reason_code)) {
     S.quote = null;
     S.quoteError = { message: "Manager's discount: choose who approved it and why, or remove it." };
+    S.quoting = false;
     renderAll();
     return;
   }
   const seq = ++quoteSeq;
-  put("#quote", h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…"));
+  S.quoting = true;
   try {
     const q = await api("POST", "/quotes", req, "Price check");
     if (seq !== quoteSeq) return;
@@ -402,6 +410,7 @@ async function runQuote() {
     if (e.code === "bad_acknowledgement") { S.acks.clear(); return runQuote(); }
     S.quote = null; S.quoteError = e;
   }
+  S.quoting = false;
   renderAll();
 }
 
@@ -422,7 +431,8 @@ function renderQuote() {
   const q = S.quote;
   if (S.quoteError) { put("#quote", errorBox(S.quoteError)); return; }
   if (!q) {
-    put("#quote", h("p", { class: "muted", text: S.customer ? "Pick a frame or a lens." : "Look up a customer and pick a frame or lens." }));
+    put("#quote", S.quoting ? h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…")
+      : h("p", { class: "muted", text: S.customer ? "Pick a frame or a lens." : "Look up a customer and pick a frame or lens." }));
     return;
   }
   const t = q.totals;
@@ -445,7 +455,7 @@ function renderQuote() {
       others.length ? h("details", {}, h("summary", { class: "small", text: others.length + " other offer(s) not applied, and why" }),
         others.map((o) => h("div", { class: "offer" }, h("div", { class: "grow" }, h("div", { class: "name", text: o.name }), h("div", { class: "why", text: o.why }))))) : null) : null,
     q.issues.length ? h("div", {}, h("h3", { text: "Checks" }), q.issues.map(issueNotice)) : h("p", { class: "small muted", text: "Prescription, lens limits and stock checked: nothing to flag." }),
-    q.blocked ? h("p", { class: "small", text: "Fix the red items (or tick the amber ones) to take payment." }) : null);
+    q.blocked ? h("p", { class: "small", text: "Tick the amber checks above to take payment." }) : null);
 }
 
 // ------------------------------------------------------------------ payment
@@ -457,25 +467,13 @@ function renderPayment() {
     label ? h("p", { class: "small muted", text: label }) : null,
     h("div", { class: "paybuttons" },
       ["upi", "card", "cash"].map((m) => h("button", { class: "primary", disabled: !canPay, text: method(m), onclick: () => pay(m) }))));
-  const parts = [];
+  const amount = b && b.status !== "draft" ? b.total : S.quote ? S.quote.totals.net : null;
+  const parts = [amount !== null ? h("div", { class: "payamount" }, h("div", { class: "muted", text: "To pay" }), h("div", { class: "big", text: rs(amount) })) : null];
 
   if (S.busy) {
     parts.push(h("div", { class: "busy" }, h("div", { class: "spinner" }), S.busy));
-  } else if (b && b.status === "synced") {
-    parts.push(h("div", { class: "result ok" },
-      h("h3", { text: "Paid. Invoice " + b.invoice_no }),
-      h("div", { text: rs(b.total) + " by " + method(b.payment_method) + (b.charge_id ? " · terminal ref " + b.charge_id : "") }),
-      h("div", { class: "small", text: "Recorded in Shopify as " + b.shopify_order_name + "; the frame is off Shopify's stock." }),
-      S.lastPayMs !== null ? h("div", { class: "small", text: "From pressing Pay to the invoice: " + (S.lastPayMs / 1000).toFixed(2) + " s" + retriesNote(S.lastPayNet) }) : null),
-    invoiceButtons(b), h("div", { class: "row" }, h("button", { class: "primary", text: "Next customer", onclick: newBill })));
-  } else if (b && b.status === "paid") {
-    parts.push(h("div", { class: "result warn" },
-      h("h3", { text: "Paid. Invoice " + b.invoice_no + " issued" }),
-      h("div", { text: rs(b.total) + " by " + method(b.payment_method) + ". The customer can leave with the invoice." }),
-      h("div", { class: "small", text: "Shopify hasn't accepted the order yet" + (b.last_error ? " (" + b.last_error + ")" : "") +
-        ". It's kept and sent on the next sync; the frame stays reserved until then." })),
-    invoiceButtons(b),
-    h("div", { class: "row" }, h("button", { text: "Send to Shopify now", onclick: syncThisBill }), h("button", { class: "primary", text: "Next customer", onclick: newBill })));
+  } else if (b && ["paid", "synced"].includes(b.status)) {
+    parts.push(h("p", { class: "muted", text: "Paid. See the last step." }));
   } else if (b && b.status === "payment_pending") {
     parts.push(h("div", { class: "result warn" },
       h("h3", { text: "Waiting on the card machine" }),
@@ -483,9 +481,6 @@ function renderPayment() {
       h("div", { class: "small", text: "Trying again reuses the same bill reference, so the customer can't be charged twice. The frame stays reserved." })),
     h("div", { class: "row" }, h("button", { class: "primary", text: "Try " + method(b.payment_method) + " again", onclick: () => pay(b.payment_method) })),
     managerCancel(b));
-  } else if (b && b.status === "cancelled") {
-    parts.push(h("div", { class: "result" }, h("h3", { text: "Bill cancelled" }), h("div", { class: "small", text: "Nothing was charged; any reserved frame is back on sale." })),
-      h("div", { class: "row" }, h("button", { class: "primary", text: "Next customer", onclick: newBill })));
   } else {
     if (e && e.code === "payment_declined") {
       parts.push(h("div", { class: "result bad" }, h("h3", { text: "Payment declined" }), h("div", { text: e.message })));
@@ -494,14 +489,36 @@ function renderPayment() {
     } else {
       if (e) {
         const extra = e.code === "till_not_open" ? h("button", { class: "small", text: "Open the cash drawer", onclick: () => showTab("till") })
-          : e.code === "quote_changed" || e.code === "stock_held" || e.code === "bill_blocked" ? h("button", { class: "small", text: "Re-check price and stock", onclick: async () => { S.payError = null; await loadCatalog(); runQuote(); } })
+          : e.code === "quote_changed" || e.code === "stock_held" || e.code === "bill_blocked" ? h("button", { class: "small", text: "Re-check price and stock with the customer", onclick: async () => {
+            S.payError = null; S.step = 3; await loadCatalog(); cartChanged();  // a new price needs the customer's yes again
+          } })
             : null;
         parts.push(errorBox(e, extra));
       }
-      parts.push(S.quote && !S.quote.blocked ? h("div", {}, h("div", { class: "big", text: rs(S.quote.totals.net) }), buttons()) : buttons(S.quote ? null : "Price the bill first."));
+      parts.push(buttons(e ? null : "How is the customer paying?"));
     }
   }
   put("#payment", parts);
+}
+
+function renderDone() {
+  const b = S.bill;
+  if (!b || !["paid", "synced"].includes(b.status)) { put("#done"); return; }
+  const ok = b.status === "synced";
+  put("#done",
+    h("div", { class: "done-head" },
+      h("div", { class: "tick" + (ok ? "" : " warn"), text: ok ? "✓" : "!" }),
+      h("div", { class: "big", text: "Paid " + rs(b.total) + " by " + method(b.payment_method) }),
+      h("div", { class: "muted", text: "Invoice " + b.invoice_no + " · " + b.customer_name })),
+    ok ? h("div", { class: "notice ok" }, h("b", { text: "Recorded in Shopify as " + b.shopify_order_name + "." }),
+      h("div", { class: "hint", text: "The frame is off Shopify's stock." + (b.charge_id ? " Terminal ref " + b.charge_id + "." : "") }))
+      : h("div", { class: "notice warn" }, h("b", { text: "The customer can leave with the invoice. Shopify hasn't accepted the order yet." }),
+        h("div", { class: "hint", text: "It's kept and sent on the next sync; the frame stays reserved until then." + (b.last_error ? " (" + b.last_error.replace(/https?:\/\/[^\s/]+(\/admin\/api\/[^/]+)?/g, "") + ")" : "") })),
+    h("div", { class: "tablewrap" }, h("table", {}, b.lines.map((l) => h("tr", {},
+      h("td", { text: l.description }), h("td", { class: "num", text: rs(l.mrp - l.discounts.reduce((n, d) => n + d[1], 0)) }))))),
+    S.lastPayMs !== null ? h("p", { class: "small muted", text: "From pressing Pay to the invoice: " + (S.lastPayMs / 1000).toFixed(2) + " s" + retriesNote(S.lastPayNet) }) : null,
+    h("div", { class: "row wrap" }, invoiceButtons(b), ok ? null : h("button", { text: "Send to Shopify now", onclick: syncThisBill })),
+    h("div", { class: "stepnav" }, h("span", {}), h("button", { class: "primary", text: "Next customer →", onclick: newBill })));
 }
 
 function retriesNote(net) {
@@ -560,11 +577,11 @@ async function syncThisBill() {
 
 async function cancelBill(b, approverId) {
   try {
-    S.bill = await api("POST", "/bills/" + b.bill_id + "/cancel", { staff_id: S.staffId, why: approverId ? "terminal stuck; manager confirmed no payment" : "customer did not proceed", approver_id: approverId || null }, "Cancel bill");
-    S.payError = null;
-  } catch (e) { S.payError = e; }
-  renderAll();
-  loadCatalog();
+    await api("POST", "/bills/" + b.bill_id + "/cancel", { staff_id: S.staffId, why: approverId ? "terminal stuck; manager confirmed no payment" : "customer did not proceed", approver_id: approverId || null }, "Cancel bill");
+  } catch (e) { S.payError = e; renderAll(); return; }
+  S.bill = null;  // already cancelled: newBill must not cancel it again
+  newBill();
+  toast("Bill cancelled. Nothing was charged; the frame is back on sale.");
 }
 
 function discardDraft(b) {
@@ -573,11 +590,89 @@ function discardDraft(b) {
     .then(loadCatalog).catch(() => {});
 }
 
+// ------------------------------------------------------------------ steps
+const STEPS = ["Customer", "Frames & lenses", "Review", "Payment", "Done"];
+
+// Which steps can be shown. `ready` also waits for a price check in flight (for the Continue buttons).
+function reachable(n, ready) {
+  const b = S.bill;
+  if (b && ["paid", "synced"].includes(b.status)) return n === 5;
+  if (S.busy || (b && b.status === "payment_pending")) return n === 4;
+  if (n === 5) return false;
+  if (n >= 2 && !S.customer) return false;
+  if (n >= 3 && (!S.quote || S.quote.issues.some((i) => i.severity === "block") || (ready && S.quoting))) return false;
+  if (n >= 4 && S.quote.blocked) return false;
+  return true;
+}
+
+function go(n) {
+  if (!reachable(n, true)) return;
+  S.step = n;
+  renderAll();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function fixStep() {
+  const b = S.bill;
+  if (b && ["paid", "synced"].includes(b.status)) S.step = 5;
+  else if (S.busy || (b && b.status === "payment_pending")) S.step = 4;
+  else while (S.step > 1 && !reachable(S.step)) S.step--;  // e.g. stock moved: back to where it can be fixed
+}
+
+function renderStepper() {
+  put("#stepper", STEPS.map((label, i) => {
+    const n = i + 1;
+    return h("li", { class: n === S.step ? "active" : n < S.step ? "done" : "" },
+      h("button", { type: "button", disabled: n === S.step || !reachable(n, true), onclick: () => go(n) },
+        h("span", { class: "num", text: n < S.step ? "✓" : String(n) }), h("span", { class: "label", text: label })));
+  }));
+}
+
+function renderSummary() {
+  const c = S.customer;
+  if (!c || S.step === 1 || S.step === 5) { put("#bill-summary"); $("#bill-summary").className = ""; return; }
+  const items = billRequest().pairs.length;
+  $("#bill-summary").className = "summary";
+  put("#bill-summary",
+    h("span", { class: "who", text: c.customer.name }),
+    h("span", { class: "muted", text: c.customer.phone }),
+    c.customer.flags.map((f) => h("span", { class: "chip warn", text: f })),
+    h("span", { class: "muted", text: items ? items + " pair" + (items > 1 ? "s" : "") : "nothing added yet" }),
+    h("span", { class: "amount", text: S.quote ? rs(S.quote.totals.net) : S.quoting ? "…" : "" }),
+    lookupLocked() ? null : h("button", { type: "button", class: "ghost small", text: "Start over", onclick: () => { if (confirm("Drop this bill and start again?")) newBill(); } }));
+}
+
+function renderCartTotal() {
+  const el = $("#cart-total");
+  const q = S.quote;
+  if (S.quoteError) { put(el, errorBox(S.quoteError)); return; }
+  if (!billRequest().pairs.length) { put(el, h("p", { class: "muted", text: "Pick a frame, a lens, or both." })); return; }
+  if (!q) { put(el, h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…")); return; }
+  const blocks = q.issues.filter((i) => i.severity === "block");
+  const confirms = q.issues.filter((i) => i.severity === "confirm");
+  put(el,
+    h("div", { class: "carttotal" },
+      h("div", {}, h("span", { class: "muted", text: "To pay " }), h("span", { class: "big", text: rs(q.totals.net) }),
+        q.totals.discount ? h("span", { class: "chip ok", style: "margin-left:8px", text: "saves " + rs(q.totals.discount) }) : null),
+      h("span", { class: "small muted", text: S.quoting ? "updating…" : confirms.length ? confirms.length + " check(s) to confirm on the next step" : "GST included" })),
+    blocks.map(issueNotice));
+}
+
 let pairsLocked = null;
 function renderAll() {
+  fixStep();
   if (pairsLocked !== cartLocked()) { pairsLocked = cartLocked(); renderPairs(); }  // don't rebuild the editor under the user's fingers
+  document.querySelectorAll("#tab-bill .step").forEach((el) => el.classList.toggle("active", +el.dataset.step === S.step));
+  renderStepper();
+  renderSummary();
+  renderCartTotal();
   renderQuote();
   renderPayment();
+  renderDone();
+  $("#to-2").disabled = !reachable(2, true);
+  $("#to-3").disabled = !reachable(3, true);
+  $("#to-4").disabled = !reachable(4, true);
+  $("#nav-4").hidden = lookupLocked();
 }
 
 // ================================================================== BILLS TODAY

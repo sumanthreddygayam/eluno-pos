@@ -84,8 +84,6 @@ main { padding: 16px; max-width: 1280px; margin: 0 auto; }
   padding: 16px; box-shadow: var(--shadow); min-width: 0;
 }
 .tab > .card + .card { margin-top: 16px; }
-.sticky { position: sticky; top: 76px; }
-@media (max-width: 900px) { .sticky { position: static; } }
 .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 .row.wrap { flex-wrap: wrap; align-items: flex-end; }
 .row.spread { justify-content: space-between; flex-wrap: wrap; }
@@ -201,3 +199,53 @@ tr.sub td { color: var(--muted); font-size: 13px; }
   position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 20; max-width: min(560px, calc(100% - 32px));
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-weight: 600;
 }
+
+/* ---------------------------------------------------------------- new bill, one step at a time */
+.wizard { max-width: 880px; margin: 0 auto; }
+.stepper { display: flex; gap: 4px; list-style: none; padding: 0; margin: 0 0 12px; }
+.stepper li { flex: 1; min-width: 0; }
+.stepper button {
+  width: 100%; display: flex; align-items: center; gap: 8px; justify-content: flex-start;
+  background: none; border: 0; border-bottom: 3px solid var(--line); border-radius: 0;
+  padding: 8px 4px; min-height: 52px; color: var(--muted); font-weight: 600; text-align: left;
+}
+.stepper button:disabled { opacity: 1; cursor: default; }
+.stepper .num {
+  flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center;
+  background: var(--line); color: var(--text); font-size: 13px;
+}
+.stepper .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stepper li.done button { color: var(--text); }
+.stepper li.done .num { background: var(--ok); color: #fff; }
+.stepper li.active button { color: var(--text); border-bottom-color: var(--accent); }
+.stepper li.active .num { background: var(--accent); color: var(--accent-text); }
+@media (max-width: 600px) {
+  .stepper li:not(.active) .label { display: none; }
+  .stepper li.active { flex: 3; }
+}
+.step { display: none; }
+.step.active { display: block; }
+.stepnav {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.stepnav button { min-height: 52px; }
+.stepnav button.primary { font-size: 16px; padding: 10px 22px; }
+.summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
+}
+.summary .who { font-weight: 700; }
+.summary .amount { margin-left: auto; font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+.carttotal {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--bg);
+}
+.payamount { text-align: center; margin: 6px 0 14px; }
+.payamount .big { font-size: 34px; }
+.done-head { text-align: center; padding: 8px 0 4px; }
+.done-head .tick {
+  width: 56px; height: 56px; border-radius: 50%; margin: 0 auto 8px; display: grid; place-items: center;
+  font-size: 30px; font-weight: 700; background: var(--ok-bg); color: var(--ok);
+}
+.done-head .tick.warn { background: var(--warn-bg); color: var(--warn); }
