@@ -220,7 +220,7 @@ with the mock's 429/503 on and no console errors.
 
 ## Where AI tools helped, and where they misled me
 
-I built this with Claude Code as my main tool, and it wrote most of the code. My job was deciding what to build, pushing back when the output didn't fit the brief or the data, and refusing to believe anything that wasn't backed by a test, a measurement or the seed files. Below is what it was good at, what it got wrong, and the rules I now use to work with it.
+I built this with Claude Code as my main tool, and it wrote most of the code. My job was deciding what to build, pushing back when the output didn't fit the brief or the data, and refusing to believe anything that wasn't backed by a test, a measurement or the seed files. Below is what it was good at, and where I had to correct it.
 
 ### Where it helped
 
@@ -231,53 +231,36 @@ I built this with Claude Code as my main tool, and it wrote most of the code. My
   * seed order #1001, where a better offer combination existed (₹1,800 off against the ₹1,424.85 the old system gave).
 * **Tools to test failure.** The mock can only fail in one way: random 429s and 503s. The AI built a fault injector that can also lose a response after the server has applied the write, take Shopify down, decline a card or stall a UPI approval. It also built a timing bench that simulates Shopify's rate limit. Most of the hard cases in this repo exist because these tools made them cheap to reproduce.
 * **Showing what's happening.** Every API response carries a trace of the Shopify, store-tool and terminal calls it made. The till screen shows each 429 and 503, and the retry that absorbed it, while you bill. That came from asking it "how would a reviewer *see* the retries?"
-* **Tests as a habit.** It wrote tests alongside the code: money math to the paisa against all 12 seed orders, idempotency, two tills racing for one frame. Those tests then caught its own mistakes (below).
+* **Tests as a habit.** It wrote tests alongside the code: money math to the paisa against all 12 seed orders, idempotency, two tills racing for one frame.
 
 ### Where it misled me
 
-The mistakes weren't random. They fell into four patterns, and each needed a different safeguard.
+Both mistakes were the same kind: the AI had the right pieces, but put the decisions in the wrong order. With money, the order of the steps *is* the logic.
 
-**1. Happy-path designs that break when things fail out of order**
+**1. The offer algorithm**
 
-* **Invoice numbers at go-live.** Its first design set up a store's invoice series *during* payment, by asking Shopify for the last number used. That looked reasonable and worked in every normal run. But if Shopify was down at a store's first sale after go-live, the customer would be charged and no invoice number could be issued. *Caught by:* an integration test that takes Shopify down before the first sale. *Now:* the series is set up at cutover, and payment refuses before any money moves if it isn't ready.
-* **The half-recorded cash refund.** A cash refund larger than the drawer could cover failed *after* the refund had already been recorded. Every retry was then blocked by the stuck record. *Caught by:* tests. *Now:* a refund checks everything first (the drawer, the credit-note series, what Shopify will accept) and records nothing until all checks pass.
-* **Releasing the frame on a declined card.** It released the reserved frame the moment a card was declined. It sounds tidy, but the customer is still at the counter and usually pays another way, while a second till could sell the frame in that gap. *Caught by:* me, walking through the store scenario. *Now:* the frame stays reserved until the bill is paid or cancelled, and day-end lists any frame left reserved.
+The AI's first offer engine got the order of its decisions wrong. It weighed offers against each other before settling which ones were allowed on this bill and which could be combined. When the order is wrong, the till can show a discount that the rules don't allow, combine offers that must not be combined, and tell the salesperson the wrong reason. On a festive day, with eight offers live, that becomes either lost margin or an argument at the counter. I rewrote the algorithm in three steps, in this order:
 
-**2. Confident about things it hadn't checked**
+1. **Check the limits first.** Each offer must pass its own rules before it is considered: active, within its dates, the customer's tag (priority, campaign), the minimum number of pairs, something in the cart it applies to, and a manager's approval and reason for the manual discount. An offer that fails is dropped, and the reason is recorded.
+2. **Then stackable or not.** Each non-stackable offer is tried on its own. All the stackable offers are tried together, in priority order, each on what is left of the line after the one before, with each offer's cap applied.
+3. **Then the highest.** The combination that saves the customer the most wins (ties go to priority, and the policy is one setting). Every offer that lost gets a reason saying what beat it.
 
-* **The terminal's "idempotency".** The starter kit's README says a retried charge with the same `order_ref` is safe. The AI took that at face value. Reading `mock_server.py` showed it is only true until the first successful charge. After that, a retry would charge the customer again. *Now:* the till never sends a charge for a bill that already has a charge id, and it saves the charge id before doing anything else.
-* **Arithmetic it "knew".** It hand-wrote test expectations for discount splits and was sometimes wrong. It was sure one ₹300 split gave ₹163.65; the correct figure is ₹163.62. *Caught by:* the tests themselves. *Now:* expected values come from the formula in `validate_seed.py`, never from mental arithmetic.
-* **A bug that wasn't one.** It reported that an order "never synced" after a Shopify outage. In fact its own browser test had checked before the sync finished. The bill's audit trail showed the order had reached Shopify. *Now:* a bug report needs evidence from the system (the audit trail, Shopify's records), not from the test harness.
-* **Testing against a stale server.** While checking the All stores report in a browser, it fixed the Python code but kept testing against a server still running the old version. *Caught by:* noticing the server had been started before the fix. *Now:* restart the server after any server-side change before trusting a screen.
+On Karthik Reddy's progressive bill at HSR, this gives three stackable offers together: the free blue-cut upgrade (₹1,000), the priority customer offer (₹500) and frame + lens together (₹300), so ₹1,800 off. The other five offers show on screen with the reason each didn't apply. `tests/test_offers.py` pins this behaviour down: stacking versus priority, caps, dates, conditions, the second-pair tie-break and the manual-discount rules.
 
-**3. Problems you can't see by reading code**
+**2. The order of the payment steps**
 
-* **8 seconds per bill on Windows.** Everything was correct and slow. On Windows `localhost` tries IPv6 first while the mock only listens on IPv4, which added about 2 s to every call. *Caught by:* measuring each step, not reading code. *Now:* the code uses `127.0.0.1`, and the timing bench keeps a per-step budget.
-* **A phantom half-second pause.** The rate-limit throttle reacted to Shopify's call-limit header, but the mock sends that header on card-machine replies too. *Caught by:* the bench. *Now:* the throttle reads that header only on Shopify calls.
-* **"Still" contains "till".** The All stores report sorts alerts by keyword. "Frame still reserved" was filed under Cash drawer because "s**till**" contains "till". The logic was correct; the English wasn't. *Caught by:* looking at the actual screen. *Now:* keywords match whole words, and a test checks the category.
+The AI's first payment flow put the steps in a risky order. It charged the customer first, and only then set up the store's invoice series by asking Shopify for the last number used. In every normal run that worked. But a test that takes Shopify down at a store's first sale showed what really happens: the customer is charged, and no invoice number can be issued. Separately, nothing stopped two tills from selling the same last frame while one customer was still paying. I set the order so that anything that can fail happens *before* money moves:
 
-**4. Screens it couldn't see**
+1. **Check the price and stock again.** If anything changed since the customer said yes, stop and confirm with them.
+2. **Reserve the frame.** Other tills now see it as reserved, so they can't sell it while this customer pays.
+3. **Make sure the invoice series is ready.** If Shopify is unreachable and the series isn't set up, refuse here, with nothing charged.
+4. **Charge on the card machine,** and save the charge id at once, so a retry can never charge twice.
+5. **Issue the invoice number,** in the same database step that marks the bill paid.
+6. **Create the Shopify order.** If Shopify is down, the customer still leaves with the invoice and the order is sent later. The invoice number makes sure it is sent only once.
 
-* **Its first screens were functional and dull.** Twice it produced a generic "admin page" look: very spaced out, with no sense of a real till. *Fixed by:* pointing it at a real product. The final layout follows Shopify POS on a tablet: navigation on the left, the cart always visible on the right with its total and checkout at the bottom. The colours follow Shopify's Polaris palette. With a concrete reference it designed well; without one it played safe.
-* **The pay buttons drew over the price.** I found this in a screenshot, not in any test: a "sticky" card slid over the payment buttons when the page scrolled.
-* **Small things that make a till feel wrong.** Driving the screen in a real headless browser at laptop and tablet widths caught issues the code didn't show:
-  * the customer box stayed locked after a sale;
-  * raw mock URLs appeared in error messages;
-  * dates rendered as "2027 - 07 - 10" because a number-font setting was applied to all text;
-  * payment time was labelled "the till's part" even when it included the customer approving UPI.
+Each step is saved before the next one starts. So a Wi-Fi drop, a declined card or a Shopify outage at any point leaves a bill that can safely be retried or cancelled, never a customer who was charged without an invoice.
 
-**Also: writing for people.** Its first reply to the stakeholders restated the brief back to Priya, who wrote it. I had it rewritten around the decisions only she and the others can make, with defaults and real per-payment-method timings. It also used terms like "re-price" without explaining them, which a store team wouldn't follow.
-
-### How I work with it now
-
-1. **Failure order first.** For anything involving money or stock, ask: "what if this step fails after the previous one succeeded?" Write that test before the code.
-2. **Read the source, not the README.** For any system the till depends on, the mock's code beats its documentation.
-3. **Numbers come from formulas and measurements,** never from the AI's head.
-4. **Enforce the rules in code.** `test_architecture.py` stops the domain code from importing anything it shouldn't. It caught the AI importing `calendar` into the domain code while adding prescriptions.
-5. **Look at the real screen,** in a real browser at a real tablet width, after restarting anything that changed.
-6. **Give it a reference.** "Make it look good" got generic results; "follow Shopify POS and Polaris" got a till.
-
-It is very fast and genuinely useful, but nothing it says is true until a test, a measurement, the data or the screen agrees.
+It is very fast and genuinely useful, but nothing it decides is right until the order of the steps has been checked against what happens when one of them fails.
 
 ## Changes to the starter kit
 
