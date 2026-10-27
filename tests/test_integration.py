@@ -499,6 +499,44 @@ class HttpApi(MockTestCase):
             self.assertEqual(e.exception.code, 404)
 
 
+class AllStoresReport(MockTestCase):
+    def test_every_store_side_by_side_with_every_alert(self):
+        # JN: a cash sale, the drawer counted Rs 100 short (under the Rs 200 alert limit)
+        self.app.tills.open("JN", "S120", 300000)
+        cash = self.sell(SURESH, "cash")
+        self.app.tills.close("JN", "S120", 300000 + cash.total - 10000)
+        # HSR: paid, but Shopify was down, so the order is not there yet
+        self.faults.outage("POST", "/orders.json")
+        self.faults.outage("GET", "/orders.json")
+        stuck_sync = self.sell(KARTHIK)
+        self.faults.clear()
+        # BR: the card machine never answered
+        waiting, _ = self.app.billing.create(SANJAY)
+        self.faults.outage("POST", "/terminal/charges", times=5)
+        with self.assertRaises(PaymentFailed):
+            self.app.billing.pay(waiting.bill_id, "card")
+        self.faults.clear()
+
+        out = Api(self.app).dispatch("GET", "/reports/all-stores?date=%s" % DAY, None)[1]
+        rows = {r["store_code"]: r for r in out["stores"]}
+        self.assertEqual(len(rows), 7)
+        self.assertEqual((rows["JN"]["bills"], rows["JN"]["net_sales"], rows["JN"]["till"]["variance"]), (1, cash.total, -10000))
+        self.assertEqual((out["totals"]["bills"], out["totals"]["pending_sync"], out["totals"]["waiting_on_terminal"]), (1, 1, 1))
+        self.assertEqual(out["totals"]["by_payment_method"], {"cash": cash.total})
+
+        def has(store, severity, text):
+            return any(a["store_code"] == store and a["severity"] == severity and text in a["message"] for a in out["alerts"])
+        self.assertTrue(has("JN", "info", "short by Rs 100.00"))
+        self.assertTrue(has("HSR", "error", stuck_sync.invoice_no + ": payment captured"))
+        self.assertTrue(has("BR", "warning", "waiting on the card machine"))
+        self.assertTrue(has("BR", "warning", "still reserved by unfinished bills"))
+        self.assertEqual(out["alerts"][0]["severity"], "error")  # the worst first
+        topics = {a["topic"] for a in out["alerts"] if a["store_code"] == "BR"}
+        self.assertEqual(topics, {"payments"})  # "still reserved" is about a payment, not the till
+        self.assertEqual((rows["HSR"]["pending_sync_amount"], out["totals"]["pending_sync_amount"]), (stuck_sync.total, stuck_sync.total))
+        self.assertEqual(out["alert_counts"]["error"], sum(r["alerts"]["error"] for r in out["stores"]))
+
+
 class HostedDemo(unittest.TestCase):
     """The sandbox behind `python run.py serve`: its own mock, switchable faults, reset to the seed."""
 

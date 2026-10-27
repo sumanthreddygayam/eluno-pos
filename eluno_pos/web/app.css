@@ -425,3 +425,36 @@ tr.sub td { color: var(--muted); font-size: 12.5px; }
   .netlog { left: 0; }
   .netlog-head, #netlog-body { padding-left: 16px; padding-right: 16px; }
 }
+
+/* ---------------------------------------------------------------- all stores */
+.reportbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.reportbar input[type=date] { height: 36px; }
+.stat.alarm { background: var(--critical-bg); }
+.stat.alarm b { color: var(--critical-text); }
+.stat.caution { background: var(--caution-bg); }
+.stat.caution b { color: var(--caution-text); }
+.stat.clear { background: var(--success-bg); }
+.stat.clear b { color: var(--success-text); }
+.split { margin-top: 4px; }
+.splitbar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-3); gap: 2px; }
+.splitlegend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.splitlegend span { display: inline-flex; align-items: center; gap: 6px; }
+.splitlegend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.seg-upi { background: #5c6ac4; }
+.seg-card { background: #303030; }
+.seg-cash { background: #29845a; }
+.seg-none { background: #8a8a8a; }
+.alert { display: flex; align-items: flex-start; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
+.alert:last-child { border-bottom: 0; }
+.alert .sev { width: 4px; align-self: stretch; border-radius: 4px; background: var(--info-text); flex: none; }
+.alert.bad .sev { background: var(--critical); }
+.alert.warn .sev { background: #e8a000; }
+.alert-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 4px; }
+.alert-meta b { color: var(--text-strong); }
+.alert-msg { color: var(--text); font-size: 13.5px; }
+.allclear { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 20px 0; text-align: center; }
+.allclear .tick { margin-bottom: 4px; }
+.storetable td { vertical-align: middle; }
+.storetable tr.row-bad td:first-child { box-shadow: inset 3px 0 0 var(--critical); }
+.storetable tr.row-warn td:first-child { box-shadow: inset 3px 0 0 #e8a000; }
+.storetable tr.total td { background: var(--surface-2); font-size: 14px; }

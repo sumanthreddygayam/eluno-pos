@@ -26,6 +26,7 @@ One process runs the till screen, the till API and its own copy of the mock, wit
 | **Refund** | Find an invoice (older invoices are read from Shopify), tick lines, give a reason; money goes back the way it came, the credit note is issued, and the frame goes back on the shelf. |
 | **Cash drawer** | Open with a float, paid in and out with reasons, count and close: shows the variance and flags it to finance when over the limit. |
 | **Day-end** | The store's day from Shopify, checked against the till's invoices, credit notes and drawer; bills by channel for all stores. |
+| **All stores** | Any date, every store side by side: bills, net sales, refunds, UPI/card/cash, the cash drawer (expected, counted, short or over) and whether everything reached Shopify. Above it, the totals and one list of every alert, worst first, filterable by severity and store: cash in Shopify that doesn't match the drawer, a drawer short or over, paid bills or refunds not yet in Shopify, Shopify totals that differ from the invoice, gaps in an invoice series, payments stuck on the card machine, frames held by unfinished bills, drawers not yet counted. "Open" jumps to that store's own day-end. |
 | **Demo controls** | Hosted demo only. Turns the mock's 429/503 on or off, resets to the seed data, and arms failures the mock can't produce: a declined card, a card machine that stops answering, a customer slow to approve UPI, Wi-Fi dropping Shopify's answer, Shopify refusing orders. It also lists sample customers and things to try. |
 
 Every payment outcome is handled on screen:
@@ -68,7 +69,7 @@ python run.py demo      # 18 feature steps, the business day and the two-tills s
 python run.py day       # just the business day: five orders across all seven stores, end to end, with day-end totals
 python run.py race      # just the two-tills scenario: one last frame, two tills 1 s apart, second by second
 python run.py bench     # checkout time per step, retries, many tills at once, Wi-Fi trouble (see docs/CHECKOUT_TIMING.md)
-python run.py test      # 107 unit + integration tests (the integration ones run against the mock with 429/503 on)
+python run.py test      # 108 unit + integration tests (the integration ones run against the mock with 429/503 on)
 ```
 
 `demo` pins the business date to 2026-10-22, the date the seed data is built around, so the output is the
@@ -175,7 +176,7 @@ The decisions most worth reading:
 
 ## Tests
 
-`python run.py test` runs 107 tests in about 45 seconds:
+`python run.py test` runs 108 tests in about 45 seconds:
 
 * **Tax**: every line of the 12 seed orders back-computed to the paisa; rates by date; a rate change is a data change.
 * **Offers**: stacking vs priority, caps, dates, conditions, second-pair tie-break, manual override rules, offers-as-data, malformed offers rejected.

@@ -16,6 +16,7 @@
   POST /tills/{store}/open|paid-in|paid-out|close  {"staff_id", "amount_paise", "reason_code"?, "note"?}
   GET  /reports/day-end?store=HSR&date=2026-10-22
   GET  /reports/channels?date=2026-10-22        bills by channel, by store
+  GET  /reports/all-stores?date=2026-10-22      every store's day-end, totals, and every alert (cash mismatch, Shopify pending, ...)
   GET  /credit-notes/{credit_note_no}.txt         (URL-encode the slashes)
   GET  /audit?ref=&store=
 
@@ -102,6 +103,7 @@ class Api:
             ("POST", r"/tills/(?P<store>\w+)/(?P<action>open|paid-in|paid-out|close)", self.till_action),
             ("GET", r"/reports/day-end", self.day_end),
             ("GET", r"/reports/channels", self.channels),
+            ("GET", r"/reports/all-stores", self.all_stores),
             ("GET", r"/credit-notes/(?P<cn>[^/]+)\.txt", self.credit_note),
             ("GET", r"/audit", self.audit),
         ]:
@@ -297,6 +299,9 @@ class Api:
 
     def channels(self, body, q):
         return 200, self.app.reports.channels(date.fromisoformat(q["date"]) if q.get("date") else self.app.clock.today()), "json"
+
+    def all_stores(self, body, q):
+        return 200, self.app.reports.all_stores(date.fromisoformat(q["date"]) if q.get("date") else self.app.clock.today()), "json"
 
     def credit_note(self, body, q, cn):
         r = self.app.repo.get_refund_by_credit_note(cn)

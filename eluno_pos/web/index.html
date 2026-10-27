@@ -16,6 +16,7 @@
   <button data-tab="refund"><span class="ico" data-icon="refund"></span><span>Refund</span></button>
   <button data-tab="till"><span class="ico" data-icon="drawer"></span><span>Cash drawer</span></button>
   <button data-tab="dayend"><span class="ico" data-icon="chart"></span><span>Day-end</span></button>
+  <button data-tab="allstores"><span class="ico" data-icon="stores"></span><span>All stores</span></button>
   <button data-tab="demo" id="demo-tab" hidden><span class="ico" data-icon="sliders"></span><span>Demo</span></button>
 </nav>
 
@@ -182,6 +183,36 @@
     <div class="card">
       <h2>Where bills came from, all stores</h2>
       <div id="channels"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ ALL STORES -->
+  <section id="tab-allstores" class="tab">
+    <div class="card">
+      <form id="all-form" class="reportbar">
+        <div class="grow">
+          <h2>All stores</h2>
+          <span class="muted small">Each store's day read from Shopify and checked against its till: sales, cash and anything that doesn't match.</span>
+        </div>
+        <div class="seg" id="all-quick"></div>
+        <input id="all-date" type="date" aria-label="Date">
+        <button type="submit" class="primary">Run report</button>
+      </form>
+      <div id="all-kpis"></div>
+    </div>
+    <div class="card">
+      <div class="row spread">
+        <h2>Alerts</h2>
+        <div class="row wrap">
+          <div class="seg" id="alert-filter"></div>
+          <select id="alert-store" aria-label="Store"></select>
+        </div>
+      </div>
+      <div id="all-alerts"></div>
+    </div>
+    <div class="card">
+      <h2>By store</h2>
+      <div id="all-table"></div>
     </div>
   </section>
 

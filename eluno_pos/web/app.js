@@ -148,6 +148,7 @@ const NAV_ICON = {
   refund: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
   drawer: '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="13" rx="2"/><path d="M2 12h20M10 16h4M6 7V4h12v3"/></svg>',
   chart: '<svg viewBox="0 0 24 24"><path d="M3 21h18M7 17V10M12 17V5M17 17v-4"/></svg>',
+  stores: '<svg viewBox="0 0 24 24"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M5 13v7h14v-7M10 20v-4h4v4"/></svg>',
   sliders: '<svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
 };
 
@@ -176,6 +177,7 @@ async function init() {
   wireRefund();
   wireTill();
   wireDayEnd();
+  wireAllStores();
   $("#bills-reload").addEventListener("click", loadBills);
   $("#sync-all").addEventListener("click", syncAll);
   $("#audit-close").addEventListener("click", () => { $("#audit-card").hidden = true; });
@@ -212,7 +214,7 @@ async function onStoreChange() {
   if (active !== "bill") showTab(active);
 }
 
-const PAGE_TITLE = { bill: "New bill", bills: "Bills today", refund: "Refund", till: "Cash drawer", dayend: "Day-end report", demo: "Demo controls" };
+const PAGE_TITLE = { bill: "New bill", bills: "Bills today", refund: "Refund", till: "Cash drawer", dayend: "Day-end report", allstores: "All stores", demo: "Demo controls" };
 
 function showTab(name) {
   $("#page-title").textContent = PAGE_TITLE[name] || "";
@@ -222,6 +224,7 @@ function showTab(name) {
   if (name === "refund") loadRecentForRefund();
   if (name === "till") loadTill();
   if (name === "demo") loadSandbox();
+  if (name === "allstores") loadAllStores();
   if (name === "bill") loadCatalog();
 }
 
@@ -1206,6 +1209,116 @@ async function loadDayEnd() {
     h("tr", {}, h("th", { text: "Store" }), chans.map((c) => h("th", { class: "num", text: titleCase(c) }))),
     Object.entries(ch).map(([st, row]) => h("tr", {}, h("td", { text: st }),
       chans.map((c) => h("td", { class: "num", text: row[c] ? row[c].bills + " · " + rs(row[c].net) : "–" })))))));
+}
+
+// ================================================================== ALL STORES
+// Every store's day side by side, the totals, and one list of everything that needs a look.
+let ALL = null;
+const ALERT_FILTER = { severity: "all", store: "" };
+const SEV = { error: ["Needs action", "bad"], warning: ["Check", "warn"], info: ["FYI", "info"] };
+const TOPIC = { cash: "Cash drawer", shopify: "Shopify", payments: "Payments", documents: "Invoices", other: "Other" };
+const shortName = (name) => String(name || "").replace(/^Eluno\s+/, "");
+
+function wireAllStores() {
+  $("#all-form").addEventListener("submit", (e) => { e.preventDefault(); loadAllStores(); });
+  const shift = (days) => { const d = new Date(S.meta.business_date + "T12:00:00"); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+  put("#all-quick", [["Today", 0], ["Yesterday", -1]].map(([label, n]) => h("button", { type: "button", text: label,
+    onclick: () => { $("#all-date").value = shift(n); loadAllStores(); } })));
+  $("#all-date").value = S.meta.business_date;
+  $("#alert-store").addEventListener("change", () => { ALERT_FILTER.store = $("#alert-store").value; renderAlerts(); });
+}
+
+async function loadAllStores() {
+  const day = $("#all-date").value || S.meta.business_date;
+  put("#all-kpis", h("div", { class: "busy" }, h("div", { class: "spinner" }), "Reading every store's day from Shopify…"));
+  put("#all-alerts"); put("#all-table");
+  try {
+    ALL = await api("GET", "/reports/all-stores?date=" + day, null, "All stores");
+  } catch (e) { put("#all-kpis", errorBox(e)); return; }
+  renderAllStores();
+}
+
+function openStoreDayEnd(code) {
+  $("#store").value = code;
+  onStoreChange().then(() => { $("#dayend-date").value = ALL.date; showTab("dayend"); loadDayEnd(); });
+}
+
+function renderAllStores() {
+  const t = ALL.totals;
+  const c = ALL.alert_counts;
+  const stat = (label, value, sub, cls) => h("div", { class: "stat " + (cls || "") }, h("span", { text: label }), h("b", { text: value }), sub ? h("div", { class: "small muted", text: sub }) : null);
+  const methods = Object.entries(t.by_payment_method).sort((a, b) => b[1] - a[1]);
+  const total = methods.reduce((n, [, v]) => n + Math.max(v, 0), 0);
+  put("#all-kpis",
+    h("div", { class: "stats" },
+      stat("Bills", String(t.bills), ALL.stores.filter((r) => r.bills).length + " of " + ALL.stores.length + " stores billed"),
+      stat("Net sales", rs(t.net_sales), "after offers, GST included"),
+      stat("Refunds", t.refunds_count ? "−" + rs(t.refunds_amount) : rs(0), t.refunds_count + " credit note(s)"),
+      stat("Net after refunds", rs(t.net_after_refunds), t.pending_sync_amount ? "+" + rs(t.pending_sync_amount) + " paid, not yet in Shopify" : "matches Shopify"),
+      stat("GST collected", rs(t.tax)),
+      stat("Cash in drawers", rs(t.cash_expected), t.cash_variance ? "variance " + rs(t.cash_variance) : "no variance"),
+      stat("Alerts", String(c.error + c.warning), c.error + " need action · " + c.warning + " to check", c.error ? "alarm" : c.warning ? "caution" : "clear")),
+    total ? h("div", { class: "split" },
+      h("div", { class: "splitbar" }, methods.map(([m, v]) => h("span", { class: "seg-" + m, style: "flex:" + Math.max(v, 0), title: method(m) + " " + rs(v) }))),
+      h("div", { class: "splitlegend" }, methods.map(([m, v]) => h("span", {}, h("i", { class: "seg-" + m }), method(m) + " " + rs(v) + " · " + Math.round(100 * Math.max(v, 0) / total) + "%")))) : null);
+
+  put("#alert-filter", [["all", "All " + ALL.alerts.length], ["error", "Needs action " + c.error], ["warning", "Check " + c.warning], ["info", "FYI " + c.info]]
+    .map(([k, label]) => h("button", { type: "button", class: ALERT_FILTER.severity === k ? "on" : "", text: label,
+      onclick: () => { ALERT_FILTER.severity = k; renderAllStores(); } })));
+  options($("#alert-store"), ALL.stores.map((r) => [r.store_code, r.store_code + " · " + shortName(r.store_name)]), ALERT_FILTER.store, "All stores");
+  renderAlerts();
+
+  const drawer = (till) => {
+    if (!till) return h("span", { class: "muted", text: "no cash" });
+    if (till.status === "open") return h("div", {}, rs(till.expected), h("div", { class: "small muted", text: "open, not counted" }));
+    const v = till.variance || 0;
+    return h("div", {}, rs(till.counted), h("div", {}, h("span", { class: "chip " + (!v ? "ok" : till.flagged ? "bad" : "warn"), text: v ? (v < 0 ? "short " : "over ") + rs(Math.abs(v)) : "matches" })));
+  };
+  const rowFor = (r) => {
+    if (r.error) return h("tr", { class: "row-bad" }, h("td", {}, h("b", { text: r.store_code })), h("td", { colspan: 11 }, h("span", { class: "chip bad", text: "Couldn't read Shopify" })));
+    const worst = r.alerts.error ? "bad" : r.alerts.warning ? "warn" : "";
+    return h("tr", { class: worst ? "row-" + worst : "" },
+      h("td", {}, h("b", { text: r.store_code }), h("div", { class: "small muted", text: shortName(r.store_name) })),
+      h("td", { class: "num", text: String(r.bills) }),
+      h("td", { class: "num", text: rs(r.net_sales) }),
+      h("td", { class: "num", text: r.refunds_amount ? "−" + rs(r.refunds_amount) : "–" }),
+      h("td", { class: "num" }, h("b", { text: rs(r.net_after_refunds) }),
+        r.pending_sync_amount ? h("div", { class: "small", style: "color:var(--critical-text)", text: "+" + rs(r.pending_sync_amount) + " paid, not in Shopify" }) : null),
+      ["upi", "card", "cash"].map((m) => h("td", { class: "num", text: r.by_payment_method[m] ? rs(r.by_payment_method[m]) : "–" })),
+      h("td", { class: "num" }, drawer(r.till)),
+      h("td", {}, r.pending_sync ? h("span", { class: "chip bad", text: r.pending_sync + " not in Shopify" })
+        : r.waiting_on_terminal ? h("span", { class: "chip warn", text: r.waiting_on_terminal + " waiting on terminal" }) : h("span", { class: "chip ok", text: "in sync" })),
+      h("td", {}, r.alerts.error || r.alerts.warning
+        ? h("button", { type: "button", class: "small", text: r.alerts.error ? r.alerts.error + " to act on" : r.alerts.warning + " to check",
+          onclick: () => { ALERT_FILTER.store = r.store_code; ALERT_FILTER.severity = "all"; renderAllStores(); $("#all-alerts").scrollIntoView({ behavior: "smooth", block: "center" }); } })
+        : h("span", { class: "chip ok", text: "all clear" })),
+      h("td", {}, h("button", { type: "button", class: "small ghost", text: "Open →", onclick: () => openStoreDayEnd(r.store_code) })));
+  };
+  put("#all-table", h("div", { class: "tablewrap" }, h("table", { class: "storetable" },
+    h("tr", {}, ["Store", "Bills", "Net sales", "Refunds", "Net", "UPI", "Card", "Cash", "Drawer", "Shopify", "Alerts", ""].map((x, i) =>
+      h("th", { class: i >= 1 && i <= 8 ? "num" : "", text: x }))),
+    ALL.stores.map(rowFor),
+    h("tr", { class: "total" }, h("td", { text: "All stores" }), h("td", { class: "num", text: String(t.bills) }), h("td", { class: "num", text: rs(t.net_sales) }),
+      h("td", { class: "num", text: t.refunds_amount ? "−" + rs(t.refunds_amount) : "–" }), h("td", { class: "num", text: rs(t.net_after_refunds) }),
+      ["upi", "card", "cash"].map((m) => h("td", { class: "num", text: t.by_payment_method[m] ? rs(t.by_payment_method[m]) : "–" })),
+      h("td", { class: "num", text: rs(t.cash_expected) }), h("td", { text: t.pending_sync ? t.pending_sync + " pending" : "" }), h("td", {}), h("td", {})))));
+}
+
+function renderAlerts() {
+  const list = ALL.alerts.filter((a) => (ALERT_FILTER.severity === "all" || a.severity === ALERT_FILTER.severity) && (!ALERT_FILTER.store || a.store_code === ALERT_FILTER.store));
+  if (!ALL.alerts.length) {
+    put("#all-alerts", h("div", { class: "allclear" }, h("div", { class: "tick", text: "✓" }), h("b", { text: "Everything matches" }),
+      h("span", { class: "muted small", text: "Shopify, the invoice series, credit notes and every cash drawer agree for " + ALL.date + "." })));
+    return;
+  }
+  put("#all-alerts", list.length ? list.map((a) => h("div", { class: "alert " + SEV[a.severity][1] },
+    h("span", { class: "sev" }),
+    h("div", { class: "grow" },
+      h("div", { class: "alert-meta" }, h("span", { class: "chip " + SEV[a.severity][1], text: SEV[a.severity][0] }), h("b", { text: a.store_code }),
+        h("span", { class: "muted", text: shortName(a.store_name) }), h("span", { class: "chip", text: TOPIC[a.topic] || a.topic })),
+      h("div", { class: "alert-msg", text: a.message.replace(/https?:\/\/[^\s/]+(\/admin\/api\/[^/]+)?/g, "") })),
+    h("button", { type: "button", class: "small ghost", text: "Open store →", onclick: () => openStoreDayEnd(a.store_code) })))
+    : h("p", { class: "muted", text: "Nothing for this filter." }));
 }
 
 // ================================================================== DEMO CONTROLS

@@ -1,15 +1,34 @@
 """Day-end report: numbers from Shopify, checked against the POS ledger and the till."""
 from __future__ import annotations
 
+import re
 from datetime import date
+from typing import Any, Dict, List
 
 from ..adapters.sqlite_repo import SqliteRepository
 from ..config import BusinessConfig
+from ..domain.bill import PAID, PAYMENT_PENDING
 from ..domain.dayend import DayEndReport, Finding, build_day_end, reconcile
 from ..domain.documents import CREDIT_NOTE, INVOICE, series_key
 from ..domain.money import format_inr
-from ..ports import CommercePlatform
+from ..ports import CommercePlatform, IntegrationError
 from .common import Directory
+
+SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+
+
+def _topic(message: str) -> str:
+    """Which part of the day an alert is about, so the screen can group and filter them."""
+    m = message.lower()
+    if "reserved" in m or "card machine" in m:
+        return "payments"
+    if re.search(r"\b(cash|till|drawer)\b", m):
+        return "cash"
+    if "series" in m or "invoice number" in m or "no credit note" in m:
+        return "documents"
+    if "shopify" in m:
+        return "shopify"
+    return "other"
 
 
 class ReportService:
@@ -66,3 +85,58 @@ class ReportService:
         elif rep.by_payment_method.get("cash"):
             rep.findings.append(Finding("warning", "Cash bills in Shopify but no till session recorded for %s on %s." % (store_code, day)))
         return rep
+
+    def all_stores(self, day: date) -> Dict[str, Any]:
+        """Every store's day-end side by side, totals, and one list of everything that needs a look."""
+        rows: List[Dict[str, Any]] = []
+        alerts: List[Dict[str, Any]] = []
+        totals = {k: 0 for k in ("bills", "net_sales", "refunds_count", "refunds_amount", "net_after_refunds", "discounts", "tax",
+                                 "cash_expected", "cash_variance", "pending_sync", "pending_sync_amount", "waiting_on_terminal")}
+        totals["by_payment_method"] = {}
+
+        def alert(store, severity: str, message: str) -> None:
+            alerts.append({"store_code": store.store_code, "store_name": store.name, "severity": severity, "topic": _topic(message), "message": message})
+
+        for store in self.directory.stores():
+            if not store.is_billing_store:
+                continue
+            try:
+                rep = self.day_end(store.store_code, day)
+            except IntegrationError as e:
+                rows.append({"store_code": store.store_code, "store_name": store.name, "error": str(e)})
+                alert(store, "error", "Couldn't read this store's day from Shopify: %s" % e)
+                continue
+            local = self.repo.bills(store_code=store.store_code, business_date=day.isoformat())
+            pending_sync = [b for b in local if b.status == PAID]
+            waiting = [b for b in local if b.status == PAYMENT_PENDING]
+            till = rep.till or {}
+            for f in rep.findings:
+                alert(store, f.severity, f.message)
+            if waiting:
+                alert(store, "warning", "%d bill(s) waiting on the card machine, which never confirmed: %s. Retry the payment, or a manager "
+                                        "cancels after checking the terminal." % (len(waiting), ", ".join(b.bill_id for b in waiting)))
+            variance = till.get("variance")
+            if variance and not till.get("flagged"):
+                alert(store, "info", "Cash drawer %s by Rs %s at close (within the alert limit)." % ("short" if variance < 0 else "over", format_inr(abs(variance))))
+            if till.get("status") == "open":
+                alert(store, "info", "Cash drawer still open: Rs %s expected in it. Count and close it at the end of the day." % format_inr(till.get("expected") or 0))
+            methods = {k: v.net for k, v in rep.by_payment_method.items()}
+            row = {
+                "store_code": store.store_code, "store_name": store.name, "bills": rep.bills, "net_sales": rep.net_sales,
+                "refunds_count": rep.refunds_count, "refunds_amount": rep.refunds_amount, "net_after_refunds": rep.net_after_refunds,
+                "discounts": rep.discounts, "tax": rep.tax, "average_bill": rep.average_bill, "by_payment_method": methods,
+                "till": till or None, "pending_sync": len(pending_sync), "pending_sync_amount": sum(b.total for b in pending_sync),
+                "waiting_on_terminal": len(waiting),
+                "alerts": {s: sum(1 for a in alerts if a["store_code"] == store.store_code and a["severity"] == s) for s in SEVERITY_ORDER},
+            }
+            rows.append(row)
+            for k in ("bills", "net_sales", "refunds_count", "refunds_amount", "net_after_refunds", "discounts", "tax", "pending_sync", "pending_sync_amount",
+                      "waiting_on_terminal"):
+                totals[k] += row[k]
+            totals["cash_expected"] += till.get("expected") or 0
+            totals["cash_variance"] += till.get("variance") or 0
+            for k, v in methods.items():
+                totals["by_payment_method"][k] = totals["by_payment_method"].get(k, 0) + v
+        alerts.sort(key=lambda a: (SEVERITY_ORDER.get(a["severity"], 9), a["store_code"]))
+        return {"date": day.isoformat(), "currency": "INR", "unit": "paise", "stores": rows, "totals": totals, "alerts": alerts,
+                "alert_counts": {s: sum(1 for a in alerts if a["severity"] == s) for s in SEVERITY_ORDER}}
