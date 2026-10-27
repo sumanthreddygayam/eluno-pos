@@ -169,6 +169,40 @@ The decisions most worth reading:
 * **Out of scope per the brief:** e-invoicing (IRN), printer hardware, catalog search UI, customer and
   prescription creation.
 
+## Where AI tools helped, and where they misled me
+
+I built this with Claude Code as my main tool, and it wrote most of the code. My part was deciding what to build,
+pushing back when results didn't match the brief or the data, and checking every claim against a test, a
+measurement or the seed files.
+
+**Where it helped:**
+* **Reading the seed data quickly.** It spotted the prescriptions dated in the future, and that seed order #1001
+  had a better offer combination (₹1,800 vs the ₹1,424.85 the old system gave).
+* **Scaffolding.** The ports-and-adapters structure and the bulk of the 100+ tests.
+* **Failure tools.** The fault injector that fakes lost responses, outages and declined cards, and the timing bench.
+* **Docs.** First drafts of the decision log and flow docs.
+
+**Where it misled me, and what caught it:**
+* **Invoice numbers at go-live.** Its first design set up each store's invoice series *during* payment, so a
+  Shopify outage at the first sale could charge a customer with no invoice possible. The integration tests caught
+  it; the series is now ready before any money moves.
+* **Stuck cash refunds.** A cash refund the drawer couldn't cover left a half-written record that blocked every
+  retry. Tests caught it; refunds now check everything before recording anything.
+* **The mock's terminal.** It trusted the starter kit's README that the terminal is idempotent per `order_ref`.
+  Reading `mock_server.py` showed it isn't after a successful charge, so the till now never re-charges a bill
+  that has a charge id.
+* **Checkout speed.** On Windows, `localhost` resolves to IPv6 first and the mock is IPv4-only, so every call cost
+  about 2 s and a bill took 8 s. Measuring found it, not the AI.
+* **A phantom pause.** A 0.5 s pause in checkout came from the mock stamping Shopify's rate-limit header on
+  terminal answers too. The bench exposed it.
+* **Test expectations.** A few of its hand-calculated expectations were wrong (a pro-rata split of ₹300 it
+  "knew" was 163.65; it is 163.62). The tests caught them.
+* **Policies.** It released a frame immediately when a card was declined; I changed the rule so the frame stays
+  reserved until the bill is paid or cancelled. Its first stakeholder reply restated the brief to Priya; I
+  rewrote it around real decisions and real payment-method timings.
+
+The lesson I took: it's very fast, but nothing it says is true until a test, a measurement or the data agrees.
+
 ## Changes to the starter kit
 
 The starter kit is in `starter-kit/` so that one clone runs. One change: `mock_server.py` has an optional
