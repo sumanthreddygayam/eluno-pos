@@ -7,108 +7,106 @@
 <link rel="stylesheet" href="/web/app.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">Eluno <span>till</span></div>
-  <label class="field inline">Store
-    <select id="store"></select>
-  </label>
-  <label class="field inline">Staff
-    <select id="staff"></select>
-  </label>
-  <div class="topinfo">
-    <span id="bizdate" class="chip"></span>
-    <span id="mode" class="chip"></span>
+<header class="appbar">
+  <div class="brand">
+    <svg viewBox="0 0 64 28" aria-hidden="true"><circle cx="16" cy="14" r="10"/><circle cx="48" cy="14" r="10"/><path d="M26 12q6-5 12 0"/></svg>
+    <b>eluno</b><span>till</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="bill" class="active"><span class="ico" data-icon="bill"></span>New bill</button>
+    <button data-tab="bills"><span class="ico" data-icon="list"></span>Bills today</button>
+    <button data-tab="refund"><span class="ico" data-icon="refund"></span>Refund</button>
+    <button data-tab="till"><span class="ico" data-icon="drawer"></span>Cash drawer</button>
+    <button data-tab="dayend"><span class="ico" data-icon="chart"></span>Day-end</button>
+    <button data-tab="demo" id="demo-tab" hidden><span class="ico" data-icon="sliders"></span>Demo</button>
+  </nav>
+  <div class="appbar-right">
+    <label class="pill"><span>Store</span><select id="store"></select></label>
+    <label class="pill"><span>Staff</span><select id="staff"></select></label>
+    <div class="clock"><b id="clock"></b><span id="bizdate"></span></div>
+    <span id="mode"></span>
   </div>
 </header>
 
-<nav class="tabs" id="tabs">
-  <button data-tab="bill" class="active">New bill</button>
-  <button data-tab="bills">Bills today</button>
-  <button data-tab="refund">Refund</button>
-  <button data-tab="till">Cash drawer</button>
-  <button data-tab="dayend">Day-end</button>
-  <button data-tab="demo" id="demo-tab" hidden>Demo controls</button>
-</nav>
-
 <main>
-  <!-- ============================================================ NEW BILL (one step at a time) -->
+  <!-- ============================================================ NEW BILL: the step on the left, the bill ticket on the right -->
   <section id="tab-bill" class="tab active">
-    <div class="wizard">
-      <ol class="stepper" id="stepper"></ol>
-      <div id="bill-summary"></div>
+    <div class="pos">
+      <div class="work">
+        <ol class="stepper" id="stepper"></ol>
+        <div id="bill-summary"></div>
 
-      <div class="card step" data-step="1">
-        <h2>Who is the customer?</h2>
-        <form id="lookup-form" class="row">
-          <input id="phone" type="tel" inputmode="tel" placeholder="Mobile number (10 digits)" list="sample-phones" autocomplete="off" required>
-          <datalist id="sample-phones"></datalist>
-          <button type="submit" class="primary">Look up</button>
-        </form>
-        <div id="customer"></div>
-        <div class="stepnav">
-          <span></span>
-          <button type="button" class="primary" id="to-2">Continue: frames and lenses →</button>
+        <div class="card step" data-step="1">
+          <div class="step-head"><h2>Find the customer</h2><span class="muted small">Their mobile number, from the booking or at the counter.</span></div>
+          <form id="lookup-form" class="phonebar">
+            <span class="cc">+91</span>
+            <input id="phone" type="tel" inputmode="tel" placeholder="98765 43210" list="sample-phones" autocomplete="off" required>
+            <datalist id="sample-phones"></datalist>
+            <button type="submit" class="primary">Look up</button>
+          </form>
+          <div id="quickpick" class="quickpick"></div>
+          <div id="customer"></div>
+          <div class="stepnav">
+            <span></span>
+            <button type="button" class="primary" id="to-2">Continue: frames and lenses →</button>
+          </div>
         </div>
-      </div>
 
-      <div class="card step" data-step="2">
-        <h2>Frames and lenses</h2>
-        <fieldset id="cart">
-          <div id="pairs"></div>
-          <div class="row">
-            <button type="button" id="add-pair">+ Add another pair</button>
-            <button type="button" id="refresh-stock" class="ghost" title="Read stock from Shopify again">Refresh stock</button>
-          </div>
-          <div class="row wrap">
-            <label class="field">Where the customer came from
-              <select id="channel"></select>
-            </label>
-          </div>
-          <details id="discount-box">
-            <summary>Manager's discount</summary>
-            <div class="row wrap">
-              <label class="field">Percent
-                <input id="disc-pct" type="number" min="1" max="50" step="1" placeholder="10">
-              </label>
-              <label class="field">Approved by
-                <select id="disc-approver"></select>
-              </label>
-              <label class="field">Reason
-                <select id="disc-reason"></select>
-              </label>
-              <button type="button" id="disc-clear" class="ghost">Remove</button>
+        <div class="card step" data-step="2">
+          <div class="step-head"><h2>Frames and lenses</h2><span class="muted small">Pick a frame, then the lens. Prices and stock update as you go.</span></div>
+          <fieldset id="cart">
+            <div id="pairs"></div>
+            <button type="button" id="add-pair" class="dashed">+ Add another pair (second pair or family member)</button>
+            <div class="extras">
+              <div class="optrow"><span class="optlabel">Came from</span><div class="seg wrap" id="channel-seg"></div></div>
+              <details id="discount-box">
+                <summary>Manager's discount</summary>
+                <div class="row wrap">
+                  <label class="field">Percent
+                    <input id="disc-pct" type="number" min="1" max="50" step="1" placeholder="10">
+                  </label>
+                  <label class="field">Approved by
+                    <select id="disc-approver"></select>
+                  </label>
+                  <label class="field">Reason
+                    <select id="disc-reason"></select>
+                  </label>
+                  <button type="button" id="disc-clear" class="ghost">Remove</button>
+                </div>
+                <p class="muted small">Only applied if it beats the running offers for this customer; it's recorded with the approver and reason either way.</p>
+              </details>
             </div>
-            <p class="muted small">Only applied if it beats the running offers for this customer; it's recorded with the approver and reason either way.</p>
-          </details>
-        </fieldset>
-        <div id="cart-total"></div>
-        <div class="stepnav">
-          <button type="button" data-go="1">← Customer</button>
-          <button type="button" class="primary" id="to-3">Review price →</button>
+          </fieldset>
+          <div id="cart-total"></div>
+          <div class="stepnav">
+            <button type="button" data-go="1">← Customer</button>
+            <button type="button" class="primary" id="to-3">Review price →</button>
+          </div>
+        </div>
+
+        <div class="card step" data-step="3">
+          <div class="step-head"><h2>Review with the customer</h2><span class="muted small">Go through the price, the offers and any checks before taking payment.</span></div>
+          <div id="quote"></div>
+          <div class="stepnav">
+            <button type="button" data-go="2">← Change items</button>
+            <button type="button" class="primary" id="to-4">Customer agrees: take payment →</button>
+          </div>
+        </div>
+
+        <div class="card step" data-step="4">
+          <div class="step-head"><h2>Take payment</h2><span class="muted small">Choose how the customer is paying.</span></div>
+          <div id="payment"></div>
+          <div class="stepnav" id="nav-4">
+            <button type="button" data-go="3">← Back to review</button>
+            <span></span>
+          </div>
+        </div>
+
+        <div class="card step" data-step="5">
+          <div id="done"></div>
         </div>
       </div>
-
-      <div class="card step" data-step="3">
-        <h2>Review with the customer</h2>
-        <div id="quote"></div>
-        <div class="stepnav">
-          <button type="button" data-go="2">← Change items</button>
-          <button type="button" class="primary" id="to-4">Customer agrees: take payment →</button>
-        </div>
-      </div>
-
-      <div class="card step" data-step="4">
-        <h2>Payment</h2>
-        <div id="payment"></div>
-        <div class="stepnav" id="nav-4">
-          <button type="button" data-go="3">← Back to review</button>
-          <span></span>
-        </div>
-      </div>
-
-      <div class="card step" data-step="5">
-        <div id="done"></div>
-      </div>
+      <aside class="ticket" id="ticket"></aside>
     </div>
   </section>
 

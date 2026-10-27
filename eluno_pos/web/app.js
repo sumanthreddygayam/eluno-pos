@@ -130,6 +130,7 @@ const S = {
   meta: null, stores: [], staff: [], store: null, staffId: null, catalog: null, sandbox: null,
   customer: null, pairs: [], channel: "walk_in", acks: new Set(), quote: null, quoteError: null, quoting: false,
   bill: null, payError: null, busy: null, lastPayMs: null, lastPayNet: [], step: 1,
+  picking: 0, frameSearch: "", frameFilter: "all", cash: null, cashGiven: null,
 };
 const newPair = () => ({ frame: "", lensType: "", index: "", coating: "", wearer: "" });
 const staffName = (id) => { const s = S.staff.find((x) => x.staff_id === id); return s ? s.name + " (" + id + ")" : id; };
@@ -140,6 +141,15 @@ function options(select, items, selected, blank) {
   put(select, blank !== undefined ? h("option", { value: "", text: blank }) : null,
     items.map(([value, label]) => h("option", { value, text: label, selected: value === selected })));
 }
+
+const NAV_ICON = {
+  bill: '<svg viewBox="0 0 24 24"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>',
+  list: '<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  refund: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+  drawer: '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="13" rx="2"/><path d="M2 12h20M10 16h4M6 7V4h12v3"/></svg>',
+  chart: '<svg viewBox="0 0 24 24"><path d="M3 21h18M7 17V10M12 17V5M17 17v-4"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
+};
 
 // ------------------------------------------------------------------ start-up
 async function init() {
@@ -152,10 +162,14 @@ async function init() {
     put("main", errorBox(e));
     return;
   }
-  put("#bizdate", "Business date " + S.meta.business_date);
+  const day = new Date(S.meta.business_date + "T12:00:00");
+  put("#bizdate", day.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" }));
+  const tick = () => { $("#clock").textContent = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }); };
+  tick();
+  setInterval(tick, 15000);
+  document.querySelectorAll("[data-icon]").forEach((el) => { el.innerHTML = NAV_ICON[el.dataset.icon] || ""; });
   $("#dayend-date").value = S.meta.business_date;
-  options($("#channel"), S.meta.channels.map((c) => [c, titleCase(c)]), "walk_in");
-  options($("#store"), S.stores.map((s) => [s.store_code, s.store_code + " · " + s.name]), store.get("store") || "HSR");
+  options($("#store"), S.stores.map((s) => [s.store_code, s.store_code + " · " + s.name.replace(/^Eluno\s+/, "")]), store.get("store") || "HSR");
   $("#store").addEventListener("change", onStoreChange);
   $("#staff").addEventListener("change", () => { S.staffId = $("#staff").value; store.set("staff." + S.store, S.staffId); scheduleQuote(); });
   wireBill();
@@ -209,15 +223,41 @@ function showTab(name) {
 }
 
 // ================================================================== NEW BILL
+// Left: the current step. Right: the bill ticket (customer, items, offers, total, the next action).
+
+const ICON = {
+  upi: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM18 18h3v3h-3zM18 14h3M14 18v3"/></svg>',
+  card: '<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>',
+  cash: '<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v.01M18 15v.01"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+};
+const icon = (name, cls) => { const s = h("span", { class: "ico " + (cls || "") }); s.innerHTML = ICON[name] || ""; return s; };
+
+// A frame swatch: two lenses and a bridge, in the frame's colour.
+const SWATCH = { black: "#1d1f24", tortoise: "#7a4a22", havana: "#7a4a22", brown: "#6b4226", navy: "#1f3a68", blue: "#2a5bd7", crystal: "#b9d3e6",
+  clear: "#b9d3e6", gold: "#c9a227", silver: "#9aa3ad", gunmetal: "#4b5563", grey: "#6b7280", gray: "#6b7280", red: "#b42318", wine: "#7a1f3d",
+  green: "#2f7d4f", olive: "#6b7a2f", pink: "#d46a8c", rose: "#d46a8c", white: "#e5e7eb", matte: "#2b2d33", honey: "#c58b3c", amber: "#c58b3c" };
+function glasses(variant) {
+  const word = String(variant || "").toLowerCase().split(/[^a-z]+/).find((w) => SWATCH[w]);
+  const c = word ? SWATCH[word] : "#64748b";
+  const s = h("span", { class: "swatch" });
+  s.innerHTML = '<svg viewBox="0 0 64 28"><circle cx="16" cy="14" r="10" fill="' + c + '22" stroke="' + c + '" stroke-width="3.5"/>' +
+    '<circle cx="48" cy="14" r="10" fill="' + c + '22" stroke="' + c + '" stroke-width="3.5"/><path d="M26 12q6-5 12 0" fill="none" stroke="' + c + '" stroke-width="3"/>' +
+    '<path d="M6 11L1 7M58 11l5-4" stroke="' + c + '" stroke-width="3" stroke-linecap="round"/></svg>';
+  return s;
+}
+const initials = (name) => String(name || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+const TAG_CLASS = (t) => (t === "priority" ? "gold" : t.startsWith("campaign") ? "violet" : t === "family" ? "teal" : "");
+const tagLabel = (t) => (t.startsWith("campaign:") ? titleCase(t.slice(9)) : titleCase(t));
+
 function wireBill() {
   $("#lookup-form").addEventListener("submit", (e) => { e.preventDefault(); lookup($("#phone").value); });
   $("#to-2").addEventListener("click", () => go(2));
   $("#to-3").addEventListener("click", () => go(3));
   $("#to-4").addEventListener("click", () => go(4));
   document.querySelectorAll("#tab-bill [data-go]").forEach((b) => b.addEventListener("click", () => go(+b.dataset.go)));
-  $("#add-pair").addEventListener("click", () => { S.pairs.push(newPair()); renderPairs(); });
-  $("#refresh-stock").addEventListener("click", async () => { await loadCatalog(); scheduleQuote(); });
-  $("#channel").addEventListener("change", () => { S.channel = $("#channel").value; cartChanged(); });
+  $("#add-pair").addEventListener("click", () => { S.pairs.push(newPair()); S.picking = S.pairs.length - 1; renderPairs(); });
   ["#disc-pct", "#disc-approver", "#disc-reason"].forEach((id) => $(id).addEventListener("change", cartChanged));
   $("#disc-clear").addEventListener("click", () => {
     $("#disc-pct").value = ""; $("#disc-approver").value = ""; $("#disc-reason").value = "";
@@ -228,12 +268,13 @@ function wireBill() {
 function newBill() {
   if (S.bill && S.bill.status === "draft") discardDraft(S.bill);
   Object.assign(S, { customer: null, pairs: [newPair()], acks: new Set(), quote: null, quoteError: null, quoting: false, bill: null,
-    payError: null, busy: null, lastPayMs: null, lastPayNet: [], channel: "walk_in", step: 1 });
+    payError: null, busy: null, lastPayMs: null, lastPayNet: [], channel: "walk_in", step: 1, picking: 0, frameSearch: "", frameFilter: "all",
+    cash: null, cashGiven: null });
   $("#phone").value = "";
-  $("#channel").value = "walk_in";
   $("#disc-pct").value = ""; $("#disc-approver").value = ""; $("#disc-reason").value = "";
   $("#discount-box").open = false;
   put("#customer");
+  renderQuickPick();
   loadCatalog();
   renderAll();
 }
@@ -246,21 +287,32 @@ async function loadCatalog() {
   renderPairs();
 }
 
+function renderQuickPick() {
+  const picks = ["+919000000005", "+919000000006", "+919000000012", "+919000000003", "+919000000007", "+919000000014"];
+  const people = ((S.sandbox && S.sandbox.sample_customers) || []).filter((c) => picks.includes(c.phone));
+  put("#quickpick", people.length && !S.customer ? [h("span", { class: "muted small", text: "Demo customers:" }),
+    people.map((c) => h("button", { type: "button", class: "chip-btn", onclick: () => lookup(c.phone) }, c.name,
+      c.tags.length ? h("span", { class: "muted", text: " · " + c.tags.map(tagLabel).join(", ") }) : null))] : null);
+}
+
 async function lookup(phone) {
   phone = String(phone || "").trim();
   if (!phone || lookupLocked()) return;
-  if (S.bill && S.bill.status !== "draft") { newBill(); $("#phone").value = phone; }  // the next customer after a finished sale
+  if (S.bill && S.bill.status !== "draft") { newBill(); }  // the next customer after a finished sale
+  $("#phone").value = phone.replace(/^\+91/, "");
   put("#customer", h("div", { class: "busy" }, h("div", { class: "spinner" }), "Looking up…"));
   try {
     S.customer = await api("GET", "/customers/" + enc(phone), null, "Customer lookup");
-    $("#phone").value = S.customer.customer.phone;
+    $("#phone").value = S.customer.customer.phone.replace(/^\+91/, "");
   } catch (e) {
     S.customer = null;
     put("#customer", errorBox(e));
     renderAll();
     return;
   }
+  renderQuickPick();
   renderCustomer();
+  renderPairs();
   cartChanged();
   $("#to-2").focus();
 }
@@ -271,79 +323,149 @@ function renderCustomer() {
   const cust = c.customer;
   const rx = c.prescription;
   const eye = (name, e) => h("tr", {}, h("th", { text: name }), h("td", { text: dioptre(e.sph) }), h("td", { text: dioptre(e.cyl) }),
-    h("td", { text: e.axis === null || e.axis === undefined ? "" : e.axis + "°" }), h("td", { text: dioptre(e.add) }));
+    h("td", { text: e.axis === null || e.axis === undefined ? "–" : e.axis + "°" }), h("td", { text: e.add ? dioptre(e.add) : "–" }));
   put("#customer",
-    h("div", { class: "row spread" },
-      h("div", {}, h("div", { class: "big", text: cust.name }), h("div", { class: "muted", text: cust.phone + " · lifetime " + rs(cust.lifetime_value) })),
-      h("div", {}, cust.tags.map((t) => h("span", { class: "chip info", text: t })))),
-    cust.flags.length ? h("div", {}, cust.flags.map((f) => h("span", { class: "chip warn", text: f }))) : null,
-    rx ? h("div", {},
-      h("h3", { text: "Prescription " + rx.rx_id + " · " + titleCase(rx.source) + " · valid until " + rx.valid_until }),
-      h("div", { class: "tablewrap" }, h("table", { class: "rx" },
-        h("tr", {}, h("th", {}), h("th", { text: "SPH" }), h("th", { text: "CYL" }), h("th", { text: "Axis" }), h("th", { text: "ADD" })),
-        eye("Right (OD)", rx.od), eye("Left (OS)", rx.os))),
-      rx.pd ? h("p", { class: "small muted", text: "PD " + rx.pd + " mm" + (rx.notes ? " · " + rx.notes : "") }) : null)
+    h("div", { class: "custcard" },
+      h("div", { class: "avatar", text: initials(cust.name) }),
+      h("div", { class: "grow" },
+        h("div", { class: "custname", text: cust.name }),
+        h("div", { class: "muted", text: cust.phone + " · spent " + rs(cust.lifetime_value) + " with Eluno" }),
+        h("div", { class: "tags" }, cust.tags.map((t) => h("span", { class: "badge " + TAG_CLASS(t), text: tagLabel(t) }))))),
+    rx ? h("div", { class: "rxcard" },
+      h("div", { class: "rxhead" }, h("b", { text: "Prescription " + rx.rx_id }),
+        h("span", { class: "badge", text: titleCase(rx.source) }), h("span", { class: "muted small", text: "valid until " + rx.valid_until })),
+      h("table", { class: "rx" },
+        h("tr", {}, h("th", {}), h("th", { text: "SPH" }), h("th", { text: "CYL" }), h("th", { text: "AXIS" }), h("th", { text: "ADD" })),
+        eye("R · OD", rx.od), eye("L · OS", rx.os)),
+      rx.pd || rx.notes ? h("div", { class: "small muted", text: [rx.pd ? "PD " + rx.pd + " mm" : "", rx.notes || ""].filter(Boolean).join(" · ") }) : null)
       : h("div", { class: "notice warn" }, h("b", { text: "No valid prescription on file." }), h("div", { class: "hint", text: "Frames and sunglasses can still be billed; a prescription lens can't." })),
-    c.skipped_prescriptions.length ? h("p", { class: "small muted", text: "Not used: " + c.skipped_prescriptions.map((s) => s.rx_id + " (" + s.reason + ")").join("; ") }) : null,
+    c.skipped_prescriptions.length ? h("details", { class: "small" }, h("summary", { text: c.skipped_prescriptions.length + " older prescription(s) not used" }),
+      c.skipped_prescriptions.map((s) => h("div", { class: "muted", text: s.rx_id + ": " + s.reason }))) : null,
     c.flags.map(issueNotice));
 }
 
 // ------------------------------------------------------------------ pairs
 function lensOptions(type, index) {
   const all = (S.catalog && S.catalog.lenses) || [];
-  const types = [...new Set(all.map((l) => l.type))];
+  const order = ["single_vision", "bifocal", "progressive"];
+  const types = [...new Set(all.map((l) => l.type))].sort((a, b) => (order.indexOf(a) + 1 || 9) - (order.indexOf(b) + 1 || 9));
   const indices = [...new Set(all.filter((l) => l.type === type).map((l) => l.index))];
   const coatings = all.filter((l) => l.type === type && l.index === index);
   return { types, indices, coatings };
 }
 
-function frameLabel(f) {
-  const here = f.available + " here" + (f.held ? " (" + f.held + " reserved)" : "");
-  const elsewhere = !f.available && Object.keys(f.elsewhere).length
-    ? " · at " + Object.entries(f.elsewhere).map(([k, v]) => k + " " + v).join(", ") : "";
-  return f.sku + " · " + f.description + (f.category === "sunglasses" ? " (sunglasses)" : "") + " · " + rs(f.mrp) + " · " + here + elsewhere;
+function stockBadge(f) {
+  if (f.available >= 2) return h("span", { class: "stock ok", text: f.available + " in stock" });
+  if (f.available === 1) return h("span", { class: "stock warn", text: "Last one" });
+  return h("span", { class: "stock bad", text: f.held ? "Reserved" : "0 here" });
+}
+
+function frameMatches(f) {
+  const q = (S.frameSearch || "").trim().toLowerCase();
+  if (q && !(f.sku + " " + f.description).toLowerCase().includes(q)) return false;
+  if (S.frameFilter === "optical") return f.category !== "sunglasses";
+  if (S.frameFilter === "sunglasses") return f.category === "sunglasses";
+  if (S.frameFilter === "instock") return f.available > 0;
+  return true;
+}
+
+function renderTiles(i) {
+  const grid = document.getElementById("tiles-" + i);
+  if (!grid) return;
+  const p = S.pairs[i];
+  const frames = ((S.catalog && S.catalog.frames) || []).filter(frameMatches);
+  put(grid, frames.length ? frames.map((f) => h("button", {
+    type: "button", class: "tile" + (p.frame === f.sku ? " selected" : "") + (f.available ? "" : " out"), "data-sku": f.sku,
+    onclick: () => { p.frame = f.sku; p.noFrame = false; S.picking = null; renderPairs(); cartChanged(); },
+  },
+  h("div", { class: "tile-top" }, h("span", { class: "sku", text: f.sku }), stockBadge(f)),
+  glasses(f.variant),
+  h("div", { class: "tile-name", text: f.title.replace(/^Eluno\s+/, "") }),
+  h("div", { class: "tile-sub", text: f.variant + (f.category === "sunglasses" ? " · Sunglasses" : "") }),
+  !f.available && Object.keys(f.elsewhere).length ? h("div", { class: "tile-where", text: "At " + Object.entries(f.elsewhere).map(([k, v]) => k + " " + v).join(", ") }) : null,
+  h("div", { class: "tile-price", text: rs(f.mrp) })))
+    : h("p", { class: "muted", text: "No frames match." }));
+}
+
+function framePicker(i, p) {
+  const filters = [["all", "All"], ["optical", "Optical"], ["sunglasses", "Sunglasses"], ["instock", "In stock here"]];
+  const search = h("input", { type: "search", placeholder: "Search frame name, colour or SKU", value: S.frameSearch || "",
+    oninput: (e) => { S.frameSearch = e.target.value; renderTiles(i); } });
+  return h("div", { class: "picker" },
+    h("div", { class: "picker-bar" },
+      h("label", { class: "searchbox" }, icon("search"), search),
+      h("div", { class: "seg" }, filters.map(([k, label]) => h("button", { type: "button", class: S.frameFilter === k ? "on" : "", text: label,
+        onclick: () => { S.frameFilter = k; renderPairs(); } }))),
+      h("button", { type: "button", class: "ghost small", text: "Refresh stock", onclick: async () => { await loadCatalog(); scheduleQuote(); } })),
+    h("div", { class: "tiles", id: "tiles-" + i }),
+    h("div", { class: "row" },
+      h("button", { type: "button", class: "ghost small", "data-noframe": "1", text: "No frame: lens only (customer's own frame)",
+        onclick: () => { p.frame = ""; p.noFrame = true; S.picking = null; renderPairs(); cartChanged(); } }),
+      p.frame ? h("button", { type: "button", class: "ghost small", text: "Keep " + p.frame, onclick: () => { S.picking = null; renderPairs(); } }) : null));
+}
+
+function chosenFrame(i, p) {
+  const f = ((S.catalog && S.catalog.frames) || []).find((x) => x.sku === p.frame);
+  if (!p.frame) {
+    return h("div", { class: "chosen" }, h("div", { class: "grow" }, h("b", { text: "No frame" }), h("div", { class: "muted small", text: "Lens only, fitted in the customer's own frame" })),
+      h("button", { type: "button", class: "small", text: "Add a frame", onclick: () => { S.picking = i; renderPairs(); } }));
+  }
+  return h("div", { class: "chosen" }, f ? glasses(f.variant) : null,
+    h("div", { class: "grow" }, h("b", { text: f ? f.title.replace(/^Eluno\s+/, "") + " · " + f.variant : p.frame }),
+      h("div", { class: "muted small" }, p.frame + " · ", f ? rs(f.mrp) : "", " · ", f ? stockBadge(f) : null)),
+    h("button", { type: "button", class: "small", text: "Change", onclick: () => { S.picking = i; renderPairs(); } }));
+}
+
+function lensChooser(p) {
+  const { types, indices, coatings } = lensOptions(p.lensType, p.index);
+  const setType = (t) => {
+    p.lensType = t;
+    const o = lensOptions(t, "");
+    p.index = t ? (o.indices.includes("1.60") ? "1.60" : o.indices[0] || "") : "";
+    p.coating = t ? (lensOptions(t, p.index).coatings[0] || {}).coating || "" : "";
+    renderPairs(); cartChanged();
+  };
+  const setIndex = (x) => {
+    p.index = x;
+    const cs = lensOptions(p.lensType, x).coatings;
+    p.coating = (cs.find((c) => c.coating === p.coating) || cs[0] || {}).coating || "";
+    renderPairs(); cartChanged();
+  };
+  return h("div", { class: "lens" },
+    h("div", { class: "optrow" }, h("span", { class: "optlabel", text: "Lens" }),
+      h("div", { class: "seg wrap" }, [["", "No lens"]].concat(types.map((t) => [t, titleCase(t)])).map(([t, label]) =>
+        h("button", { type: "button", class: p.lensType === t ? "on" : "", "data-type": t || "none", text: label, onclick: () => setType(t) })))),
+    p.lensType ? h("div", { class: "optrow" }, h("span", { class: "optlabel", text: "Index" }),
+      h("div", { class: "seg wrap" }, indices.map((x) => h("button", { type: "button", class: p.index === x ? "on" : "", "data-index": x, text: x, onclick: () => setIndex(x) }))),
+      h("span", { class: "muted small", text: "higher = thinner" })) : null,
+    p.lensType ? h("div", { class: "optrow" }, h("span", { class: "optlabel", text: "Coating" }),
+      h("div", { class: "seg wrap" }, coatings.map((c) => h("button", { type: "button", class: p.coating === c.coating ? "on" : "", "data-coating": c.coating,
+        onclick: () => { p.coating = c.coating; renderPairs(); cartChanged(); } }, titleCase(c.coating), h("small", { text: rs(c.mrp) }))))) : null);
 }
 
 function renderPairs() {
   const locked = cartLocked();
   $("#cart").disabled = locked;
   $("#lookup-form").querySelectorAll("input, button").forEach((el) => { el.disabled = lookupLocked(); });
-  const frames = (S.catalog && S.catalog.frames) || [];
+  const wearerFor = (p) => p.wearer ? p.wearer : S.customer ? S.customer.customer.name : "the customer";
   put("#pairs", S.pairs.map((p, i) => {
-    const { types, indices, coatings } = lensOptions(p.lensType, p.index);
-    const set = (k) => (e) => {
-      p[k] = e.target.value;
-      if (k === "lensType") {
-        const o = lensOptions(p.lensType, "");
-        p.index = o.indices.includes("1.60") ? "1.60" : o.indices[0] || "";
-        p.coating = (lensOptions(p.lensType, p.index).coatings[0] || {}).coating || "";
-      }
-      if (k === "index") p.coating = (lensOptions(p.lensType, p.index).coatings.find((c) => c.coating === p.coating) ||
-        lensOptions(p.lensType, p.index).coatings[0] || {}).coating || "";
-      renderPairs();
-      cartChanged();
-    };
-    const sel = (value, items, blank, onchange, disabled) => {
-      const s = h("select", { onchange, disabled });
-      options(s, items, value, blank);
-      return s;
-    };
+    const picking = S.picking === i || (!p.frame && !p.noFrame);
     return h("div", { class: "pair" },
-      h("div", { class: "pair-head" }, h("span", { text: "Pair " + (i + 1) }),
-        S.pairs.length > 1 ? h("button", { type: "button", class: "ghost small", text: "Remove", onclick: () => { S.pairs.splice(i, 1); renderPairs(); cartChanged(); } }) : null),
-      h("div", { class: "pair-grid" },
-        h("label", { class: "field full" }, "Frame",
-          sel(p.frame, frames.map((f) => [f.sku, frameLabel(f)]), "No frame (lens only)", set("frame"))),
-        h("label", { class: "field" }, "Lens",
-          sel(p.lensType, types.map((t) => [t, titleCase(t)]), "No lens", set("lensType"))),
-        h("label", { class: "field" }, "Index",
-          sel(p.index, indices.map((x) => [x, x]), undefined, set("index"), !p.lensType)),
-        h("label", { class: "field" }, "Coating",
-          sel(p.coating, coatings.map((c) => [c.coating, titleCase(c.coating) + " · " + rs(c.mrp)]), undefined, set("coating"), !p.lensType)),
-        h("label", { class: "field full" }, "Wearer's mobile, if not the customer (family bill)",
-          h("input", { type: "tel", value: p.wearer, placeholder: "Leave empty if the customer wears it",
-            onchange: (e) => { p.wearer = e.target.value.trim(); cartChanged(); } }))));
+      h("div", { class: "pair-head" },
+        h("span", { class: "pairno", text: String(i + 1) }),
+        h("b", { text: "Pair " + (i + 1) }), h("span", { class: "muted small", text: "for " + wearerFor(p) }),
+        h("span", { class: "grow" }),
+        S.pairs.length > 1 ? h("button", { type: "button", class: "ghost small", text: "Remove pair", onclick: () => { S.pairs.splice(i, 1); S.picking = null; renderPairs(); cartChanged(); } }) : null),
+      h("div", { class: "optlabel", text: "Frame" }),
+      picking ? framePicker(i, p) : chosenFrame(i, p),
+      lensChooser(p),
+      h("details", { class: "wearer", open: !!p.wearer }, h("summary", { text: "Someone else will wear this pair (family bill)" }),
+        h("input", { type: "tel", value: p.wearer, placeholder: "Wearer's mobile number",
+          onchange: (e) => { p.wearer = e.target.value.trim(); cartChanged(); } })));
   }));
+  S.pairs.forEach((p, i) => renderTiles(i));
+  put("#channel-seg", (S.meta ? S.meta.channels : []).map((c) => h("button", { type: "button", class: S.channel === c ? "on" : "", text: titleCase(c),
+    onclick: () => { S.channel = c; renderPairs(); cartChanged(); } })));
 }
 
 function lookupLocked() {
@@ -375,6 +497,7 @@ let quoteSeq = 0;
 function cartChanged() {
   if (S.bill && S.bill.status === "draft") { discardDraft(S.bill); S.bill = null; }
   S.payError = null;
+  S.cash = null;
   scheduleQuote();
 }
 
@@ -431,49 +554,53 @@ function renderQuote() {
   const q = S.quote;
   if (S.quoteError) { put("#quote", errorBox(S.quoteError)); return; }
   if (!q) {
-    put("#quote", S.quoting ? h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…")
-      : h("p", { class: "muted", text: S.customer ? "Pick a frame or a lens." : "Look up a customer and pick a frame or lens." }));
+    put("#quote", S.quoting ? h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…") : h("p", { class: "muted", text: "Pick a frame or a lens." }));
     return;
   }
   const t = q.totals;
   const applied = q.offers.filter((o) => o.applied);
   const others = q.offers.filter((o) => !o.applied);
   put("#quote",
-    h("div", { class: "tablewrap" }, h("table", {},
+    h("div", { class: "tablewrap" }, h("table", { class: "lines" },
       h("tr", {}, h("th", { text: "Item" }), h("th", { class: "num", text: "MRP" }), h("th", { class: "num", text: "Discount" }), h("th", { class: "num", text: "Amount" })),
       q.lines.map((l) => [
-        h("tr", {}, h("td", {}, l.description, l.wearer !== q.customer.name ? h("div", { class: "small muted", text: "for " + l.wearer }) : null),
-          h("td", { class: "num", text: rs(l.mrp) }), h("td", { class: "num", text: l.discount ? "−" + rs(l.discount) : "" }), h("td", { class: "num", text: rs(l.total) })),
-        h("tr", { class: "sub" }, h("td", { colspan: 4, text: "GST " + (l.rate_bps / 100) + "% included: taxable " + rs(l.taxable) + ", CGST " + rs(l.cgst) + ", SGST " + rs(l.sgst) })),
-      ]),
-      h("tr", { class: "sub" }, h("td", { text: "Total MRP" }), h("td", { class: "num", text: rs(t.mrp) }), h("td", { class: "num", text: t.discount ? "−" + rs(t.discount) : "" }), h("td", {})),
-      h("tr", { class: "sub" }, h("td", { colspan: 3, text: "of which GST (CGST " + rs(t.cgst) + " + SGST " + rs(t.sgst) + ")" }), h("td", { class: "num", text: rs(t.tax) })),
-      h("tr", { class: "total" }, h("td", { colspan: 3, text: "To pay" }), h("td", { class: "num", text: rs(t.net) })))),
-    q.offers.length ? h("div", {},
-      h("h3", { text: "Offers (" + titleCase(q.offer_policy) + ")" }),
-      applied.map((o) => h("div", { class: "offer applied" }, h("div", { class: "grow" }, h("div", { class: "name", text: o.name + " · −" + rs(o.amount_paise) }), h("div", { class: "why", text: o.why })))),
-      others.length ? h("details", {}, h("summary", { class: "small", text: others.length + " other offer(s) not applied, and why" }),
-        others.map((o) => h("div", { class: "offer" }, h("div", { class: "grow" }, h("div", { class: "name", text: o.name }), h("div", { class: "why", text: o.why }))))) : null) : null,
-    q.issues.length ? h("div", {}, h("h3", { text: "Checks" }), q.issues.map(issueNotice)) : h("p", { class: "small muted", text: "Prescription, lens limits and stock checked: nothing to flag." }),
-    q.blocked ? h("p", { class: "small", text: "Tick the amber checks above to take payment." }) : null);
+        h("tr", {}, h("td", {}, h("b", { text: l.description }), l.wearer !== q.customer.name ? h("div", { class: "small muted", text: "for " + l.wearer }) : null,
+          h("div", { class: "small muted", text: "GST " + (l.rate_bps / 100) + "% incl. · taxable " + rs(l.taxable) + " · CGST " + rs(l.cgst) + " · SGST " + rs(l.sgst) })),
+        h("td", { class: "num", text: rs(l.mrp) }), h("td", { class: "num disc", text: l.discount ? "−" + rs(l.discount) : "" }), h("td", { class: "num", text: rs(l.total) })),
+      ]))),
+    h("div", { class: "cols" },
+      h("div", {},
+        h("h3", { text: "Offers · " + titleCase(q.offer_policy) }),
+        applied.length ? applied.map((o) => h("div", { class: "offer applied" }, h("span", { class: "dot" }),
+          h("div", { class: "grow" }, h("div", { class: "name", text: o.name }), h("div", { class: "why", text: o.why })), h("b", { class: "disc", text: "−" + rs(o.amount_paise) })))
+          : h("p", { class: "muted small", text: "No offer applies to this bill." }),
+        others.length ? h("details", {}, h("summary", { class: "small", text: others.length + " other offer(s) not applied, and why" }),
+          others.map((o) => h("div", { class: "offer" }, h("div", { class: "grow" }, h("div", { class: "name", text: o.name }), h("div", { class: "why", text: o.why }))))) : null),
+      h("div", {},
+        h("h3", { text: "Checks" }),
+        q.issues.length ? q.issues.map(issueNotice) : h("div", { class: "notice ok" }, h("b", { text: "Prescription, lens limits and stock all fine." })),
+        q.blocked ? h("p", { class: "small", text: "Tick the amber checks to take payment." }) : null)));
 }
 
 // ------------------------------------------------------------------ payment
+const PAY_HINT = { upi: "QR on the terminal", card: "Tap, insert or swipe", cash: "Count, then give change" };
+
 function renderPayment() {
   const b = S.bill;
   const e = S.payError;
   const canPay = S.quote && !S.quote.blocked && !S.busy && (!b || b.status === "draft");
-  const buttons = (label) => h("div", {},
-    label ? h("p", { class: "small muted", text: label }) : null,
-    h("div", { class: "paybuttons" },
-      ["upi", "card", "cash"].map((m) => h("button", { class: "primary", disabled: !canPay, text: method(m), onclick: () => pay(m) }))));
   const amount = b && b.status !== "draft" ? b.total : S.quote ? S.quote.totals.net : null;
-  const parts = [amount !== null ? h("div", { class: "payamount" }, h("div", { class: "muted", text: "To pay" }), h("div", { class: "big", text: rs(amount) })) : null];
+  const tiles = () => h("div", { class: "paytiles" }, ["upi", "card", "cash"].map((m) => h("button", {
+    type: "button", class: "paytile " + m, "data-method": m, disabled: !canPay,
+    onclick: () => { if (m === "cash") { S.cash = { given: "" }; renderPayment(); } else pay(m); },
+  }, icon(m, "big"), h("b", { text: method(m) }), h("span", { text: PAY_HINT[m] }))));
+  const parts = [amount !== null ? h("div", { class: "payamount" }, h("span", { class: "muted", text: "Amount due" }), h("div", { class: "big", text: rs(amount) })) : null];
 
   if (S.busy) {
-    parts.push(h("div", { class: "busy" }, h("div", { class: "spinner" }), S.busy));
+    parts.push(h("div", { class: "waiting" }, h("div", { class: "spinner big" }), h("b", { text: S.busy }),
+      h("div", { class: "muted small", text: "Don't close this screen. If it takes too long, the bill waits safely and can be retried." })));
   } else if (b && ["paid", "synced"].includes(b.status)) {
-    parts.push(h("p", { class: "muted", text: "Paid. See the last step." }));
+    parts.push(h("p", { class: "muted", text: "Paid." }));
   } else if (b && b.status === "payment_pending") {
     parts.push(h("div", { class: "result warn" },
       h("h3", { text: "Waiting on the card machine" }),
@@ -481,10 +608,12 @@ function renderPayment() {
       h("div", { class: "small", text: "Trying again reuses the same bill reference, so the customer can't be charged twice. The frame stays reserved." })),
     h("div", { class: "row" }, h("button", { class: "primary", text: "Try " + method(b.payment_method) + " again", onclick: () => pay(b.payment_method) })),
     managerCancel(b));
+  } else if (S.cash) {
+    parts.push(cashPanel(amount));
   } else {
     if (e && e.code === "payment_declined") {
       parts.push(h("div", { class: "result bad" }, h("h3", { text: "Payment declined" }), h("div", { text: e.message })));
-      parts.push(buttons("Try again, or another way:"));
+      parts.push(h("p", { class: "small muted", text: "Try again, or another way:" }), tiles());
       if (b) parts.push(h("div", { class: "row" }, h("button", { class: "danger", text: "Customer won't pay: cancel bill", onclick: () => cancelBill(b) })));
     } else {
       if (e) {
@@ -495,30 +624,61 @@ function renderPayment() {
             : null;
         parts.push(errorBox(e, extra));
       }
-      parts.push(buttons(e ? null : "How is the customer paying?"));
+      parts.push(tiles());
     }
   }
   put("#payment", parts);
+}
+
+function cashPanel(amount) {
+  const given = toPaise(S.cash.given || 0) || 0;
+  const change = given - amount;
+  const rupees = Math.ceil(amount / 100);
+  const quick = [...new Set([amount / 100, Math.ceil(rupees / 100) * 100, Math.ceil(rupees / 500) * 500, Math.ceil(rupees / 2000) * 2000])];
+  const input = h("input", { type: "number", inputmode: "decimal", min: "0", step: "0.01", class: "cashin", placeholder: "Cash received (₹)", value: S.cash.given,
+    oninput: (ev) => { S.cash.given = ev.target.value; const c = toPaise(ev.target.value || 0) - amount; $("#change").textContent = c >= 0 ? rs(c) : "–"; $("#cash-ok").disabled = !(c >= 0); } });
+  return h("div", { class: "cashpanel" },
+    h("div", { class: "optlabel", text: "Cash received" }),
+    input,
+    h("div", { class: "seg wrap" }, quick.map((v) => h("button", { type: "button", text: v === amount / 100 ? "Exact " + rs(amount) : "₹" + inr.format(v).replace(/\.00$/, ""),
+      onclick: () => { S.cash.given = v.toFixed(2); renderPayment(); } }))),
+    h("div", { class: "change" }, h("span", { text: "Change to give" }), h("b", { id: "change", text: change >= 0 ? rs(change) : "–" })),
+    h("div", { class: "row" },
+      h("button", { type: "button", class: "ghost", text: "Back", onclick: () => { S.cash = null; renderPayment(); } }),
+      h("span", { class: "grow" }),
+      h("button", { type: "button", class: "primary", id: "cash-ok", disabled: !(change >= 0), text: "Cash received: complete sale",
+        onclick: () => { S.cashGiven = toPaise(S.cash.given); pay("cash"); } })));
 }
 
 function renderDone() {
   const b = S.bill;
   if (!b || !["paid", "synced"].includes(b.status)) { put("#done"); return; }
   const ok = b.status === "synced";
+  const st = S.stores.find((s) => s.store_code === b.store_code) || {};
+  const gross = (l) => l.mrp - l.discounts.reduce((n, d) => n + d[1], 0);
   put("#done",
     h("div", { class: "done-head" },
       h("div", { class: "tick" + (ok ? "" : " warn"), text: ok ? "✓" : "!" }),
-      h("div", { class: "big", text: "Paid " + rs(b.total) + " by " + method(b.payment_method) }),
-      h("div", { class: "muted", text: "Invoice " + b.invoice_no + " · " + b.customer_name })),
-    ok ? h("div", { class: "notice ok" }, h("b", { text: "Recorded in Shopify as " + b.shopify_order_name + "." }),
-      h("div", { class: "hint", text: "The frame is off Shopify's stock." + (b.charge_id ? " Terminal ref " + b.charge_id + "." : "") }))
+      h("div", { class: "big", text: "Payment received" }),
+      h("div", { class: "muted", text: rs(b.total) + " by " + method(b.payment_method) + " · " + b.customer_name })),
+    h("div", { class: "receipt" },
+      h("div", { class: "r-center" }, h("b", { text: "ELUNO · " + (st.name || b.store_code) }), h("div", { class: "small", text: "TAX INVOICE " + b.invoice_no }),
+        h("div", { class: "small", text: (b.paid_at || "").replace("T", " ").slice(0, 16) })),
+      h("div", { class: "r-rule" }),
+      b.lines.map((l) => h("div", { class: "r-line" }, h("span", { text: l.description }), h("span", { text: rs(gross(l)) }))),
+      h("div", { class: "r-rule" }),
+      b.totals.discount ? h("div", { class: "r-line small" }, h("span", { text: "You saved" }), h("span", { text: rs(b.totals.discount) })) : null,
+      h("div", { class: "r-line small" }, h("span", { text: "GST included (CGST + SGST)" }), h("span", { text: rs(b.totals.tax) })),
+      h("div", { class: "r-line r-total" }, h("span", { text: "TOTAL" }), h("span", { text: rs(b.total) })),
+      h("div", { class: "r-line small" }, h("span", { text: "Paid by " + method(b.payment_method) }), h("span", { text: b.charge_id || "" })),
+      b.payment_method === "cash" && S.cashGiven ? [h("div", { class: "r-line small" }, h("span", { text: "Cash received" }), h("span", { text: rs(S.cashGiven) })),
+        h("div", { class: "r-line small" }, h("span", { text: "Change given" }), h("span", { text: rs(S.cashGiven - b.total) }))] : null),
+    ok ? h("div", { class: "notice ok" }, h("b", { text: "Recorded in Shopify as " + b.shopify_order_name + ". The frame is off Shopify's stock." }))
       : h("div", { class: "notice warn" }, h("b", { text: "The customer can leave with the invoice. Shopify hasn't accepted the order yet." }),
         h("div", { class: "hint", text: "It's kept and sent on the next sync; the frame stays reserved until then." + (b.last_error ? " (" + b.last_error.replace(/https?:\/\/[^\s/]+(\/admin\/api\/[^/]+)?/g, "") + ")" : "") })),
-    h("div", { class: "tablewrap" }, h("table", {}, b.lines.map((l) => h("tr", {},
-      h("td", { text: l.description }), h("td", { class: "num", text: rs(l.mrp - l.discounts.reduce((n, d) => n + d[1], 0)) }))))),
-    S.lastPayMs !== null ? h("p", { class: "small muted", text: "From pressing Pay to the invoice: " + (S.lastPayMs / 1000).toFixed(2) + " s" + retriesNote(S.lastPayNet) }) : null,
-    h("div", { class: "row wrap" }, invoiceButtons(b), ok ? null : h("button", { text: "Send to Shopify now", onclick: syncThisBill })),
-    h("div", { class: "stepnav" }, h("span", {}), h("button", { class: "primary", text: "Next customer →", onclick: newBill })));
+    S.lastPayMs !== null ? h("p", { class: "small muted r-center", text: "From pressing Pay to the invoice: " + (S.lastPayMs / 1000).toFixed(2) + " s" + retriesNote(S.lastPayNet) }) : null,
+    h("div", { class: "donebar" }, invoiceButtons(b), ok ? null : h("button", { text: "Send to Shopify now", onclick: syncThisBill }),
+      h("span", { class: "grow" }), h("button", { class: "primary big-btn", text: "Next customer →", onclick: newBill })));
 }
 
 function retriesNote(net) {
@@ -529,8 +689,8 @@ function retriesNote(net) {
 
 function invoiceButtons(b) {
   return h("div", { class: "row wrap" },
-    h("a", { href: "/invoices/" + enc(b.invoice_no) + ".html", target: "_blank", rel: "noopener" }, h("button", { text: "Print invoice" })),
-    h("a", { href: "/invoices/" + enc(b.invoice_no) + ".txt", target: "_blank", rel: "noopener" }, h("button", { class: "ghost", text: "Plain-text copy" })));
+    h("a", { class: "btn", href: "/invoices/" + enc(b.invoice_no) + ".html", target: "_blank", rel: "noopener", text: "Print invoice" }),
+    h("a", { class: "btn ghost", href: "/invoices/" + enc(b.invoice_no) + ".txt", target: "_blank", rel: "noopener", text: "Plain-text copy" }));
 }
 
 function managerCancel(b) {
@@ -548,7 +708,7 @@ function managerCancel(b) {
 
 async function pay(method) {
   if (S.busy) return;
-  S.busy = method === "cash" ? "Recording cash payment…" : "Waiting for the customer to pay on the " + (method === "upi" ? "UPI QR" : "card machine") + "…";
+  S.busy = method === "cash" ? "Recording the cash payment…" : "Waiting for the customer to pay on the " + (method === "upi" ? "UPI QR" : "card machine") + "…";
   S.payError = null;
   renderAll();
   try {
@@ -562,6 +722,7 @@ async function pay(method) {
     if (S.bill) { try { S.bill = await api("GET", "/bills/" + S.bill.bill_id, null, "Bill status"); } catch (_) { /* keep what we had */ } }
   }
   S.busy = null;
+  S.cash = null;
   renderAll();
   loadCatalog();
 }
@@ -628,6 +789,7 @@ function renderStepper() {
   }));
 }
 
+// Narrow screens: a one-line summary instead of the ticket.
 function renderSummary() {
   const c = S.customer;
   if (!c || S.step === 1 || S.step === 5) { put("#bill-summary"); $("#bill-summary").className = ""; return; }
@@ -635,27 +797,57 @@ function renderSummary() {
   $("#bill-summary").className = "summary";
   put("#bill-summary",
     h("span", { class: "who", text: c.customer.name }),
-    h("span", { class: "muted", text: c.customer.phone }),
-    c.customer.flags.map((f) => h("span", { class: "chip warn", text: f })),
     h("span", { class: "muted", text: items ? items + " pair" + (items > 1 ? "s" : "") : "nothing added yet" }),
-    h("span", { class: "amount", text: S.quote ? rs(S.quote.totals.net) : S.quoting ? "…" : "" }),
-    lookupLocked() ? null : h("button", { type: "button", class: "ghost small", text: "Start over", onclick: () => { if (confirm("Drop this bill and start again?")) newBill(); } }));
+    h("span", { class: "amount", text: S.quote ? rs(S.quote.totals.net) : S.quoting ? "…" : "" }));
 }
 
 function renderCartTotal() {
-  const el = $("#cart-total");
   const q = S.quote;
-  if (S.quoteError) { put(el, errorBox(S.quoteError)); return; }
-  if (!billRequest().pairs.length) { put(el, h("p", { class: "muted", text: "Pick a frame, a lens, or both." })); return; }
-  if (!q) { put(el, h("div", { class: "busy" }, h("div", { class: "spinner" }), "Pricing…")); return; }
-  const blocks = q.issues.filter((i) => i.severity === "block");
-  const confirms = q.issues.filter((i) => i.severity === "confirm");
-  put(el,
-    h("div", { class: "carttotal" },
-      h("div", {}, h("span", { class: "muted", text: "To pay " }), h("span", { class: "big", text: rs(q.totals.net) }),
-        q.totals.discount ? h("span", { class: "chip ok", style: "margin-left:8px", text: "saves " + rs(q.totals.discount) }) : null),
-      h("span", { class: "small muted", text: S.quoting ? "updating…" : confirms.length ? confirms.length + " check(s) to confirm on the next step" : "GST included" })),
-    blocks.map(issueNotice));
+  if (S.quoteError) { put("#cart-total", errorBox(S.quoteError)); return; }
+  if (!q) { put("#cart-total"); return; }
+  put("#cart-total", q.issues.filter((i) => i.severity === "block").map(issueNotice));
+}
+
+// The ticket: what the customer is buying, live, with the step's main action at the bottom.
+function renderTicket() {
+  const c = S.customer;
+  const q = S.quote;
+  const staff = S.staff.find((s) => s.staff_id === S.staffId);
+  const chosen = S.pairs.filter((p) => p.frame || p.lensType);
+  const head = h("div", { class: "t-head" }, h("span", { text: "Bill" }), h("span", { class: "muted small grow", text: S.store + (staff ? " · " + staff.name : "") }),
+    c && !lookupLocked() && S.step < 5 ? h("button", { type: "button", class: "ghost small", "data-startover": "1", text: "Start over",
+      onclick: () => { if (confirm("Drop this bill and start again?")) newBill(); } }) : null);
+  if (!c) {
+    put("#ticket", head, h("div", { class: "t-empty" }, icon("user", "big"), h("b", { text: "No customer yet" }),
+      h("span", { class: "muted small", text: "Look up the customer's mobile number to start the bill." })));
+    return;
+  }
+  const action = {
+    1: ["Continue: frames and lenses", () => go(2), reachable(2, true)],
+    2: ["Review price", () => go(3), reachable(3, true)],
+    3: [q ? "Take payment · " + rs(q.totals.net) : "Take payment", () => go(4), reachable(4, true)],
+  }[S.step];
+  put("#ticket", head,
+    h("div", { class: "t-cust" }, h("div", { class: "avatar small", text: initials(c.customer.name) }),
+      h("div", { class: "grow" }, h("b", { text: c.customer.name }), h("div", { class: "muted small", text: c.customer.phone })),
+      c.customer.tags.filter((t) => t === "priority").map((t) => h("span", { class: "badge gold", text: "Priority" }))),
+    h("div", { class: "t-lines" },
+      !chosen.length ? h("p", { class: "muted small", text: "No items yet." })
+        : q ? q.lines.map((l) => h("div", { class: "t-line" },
+          h("div", { class: "grow" }, h("div", { text: l.description }), l.discount ? h("div", { class: "muted small" }, h("s", { text: rs(l.mrp) }), " −" + rs(l.discount)) : null),
+          h("b", { text: rs(l.total) })))
+          : h("div", { class: "busy small" }, h("div", { class: "spinner" }), "Pricing…")),
+    q && q.offers.some((o) => o.applied) ? h("div", { class: "t-offers" }, q.offers.filter((o) => o.applied).map((o) =>
+      h("div", { class: "t-line small" }, h("span", { class: "grow", text: o.name }), h("span", { class: "disc", text: "−" + rs(o.amount_paise) })))) : null,
+    q ? h("div", { class: "t-totals" },
+      h("div", { class: "t-line small" }, h("span", { class: "grow", text: "MRP" }), h("span", { text: rs(q.totals.mrp) })),
+      q.totals.discount ? h("div", { class: "t-line small" }, h("span", { class: "grow", text: "Offers" }), h("span", { class: "disc", text: "−" + rs(q.totals.discount) })) : null,
+      h("div", { class: "t-line small muted" }, h("span", { class: "grow", text: "GST included" }), h("span", { text: rs(q.totals.tax) })),
+      h("div", { class: "t-line t-total" }, h("span", { class: "grow", text: "Total" }), h("span", { text: rs(q.totals.net) })),
+      S.quoting ? h("div", { class: "muted small", text: "updating…" }) : null,
+      q.issues.some((i) => i.severity === "block") ? h("div", { class: "t-warn bad", text: "Fix the red item to continue" })
+        : q.blocked ? h("div", { class: "t-warn", text: "Tick the amber checks on Review" }) : null) : null,
+    action ? h("button", { type: "button", class: "primary t-action", disabled: !action[2], text: action[0] + " →", onclick: action[1] }) : null);
 }
 
 let pairsLocked = null;
@@ -663,12 +855,14 @@ function renderAll() {
   fixStep();
   if (pairsLocked !== cartLocked()) { pairsLocked = cartLocked(); renderPairs(); }  // don't rebuild the editor under the user's fingers
   document.querySelectorAll("#tab-bill .step").forEach((el) => el.classList.toggle("active", +el.dataset.step === S.step));
+  $("#tab-bill .pos").classList.toggle("no-ticket", S.step === 5);
   renderStepper();
   renderSummary();
   renderCartTotal();
   renderQuote();
   renderPayment();
   renderDone();
+  renderTicket();
   $("#to-2").disabled = !reachable(2, true);
   $("#to-3").disabled = !reachable(3, true);
   $("#to-4").disabled = !reachable(4, true);
@@ -1021,7 +1215,7 @@ async function loadSandbox() {
 
 function renderSandbox() {
   const sb = S.sandbox;
-  put("#mode", h("span", { class: "chip " + (sb.mock_flaky ? "warn" : "ok"), text: "Demo · mock 429/503 " + (sb.mock_flaky ? "ON" : "off") }),
+  put("#mode", h("span", { class: "chip " + (sb.mock_flaky ? "warn" : "ok"), text: sb.mock_flaky ? "Demo · 429/503 on" : "Demo · failures off" }),
     sb.armed.length ? h("span", { class: "chip bad", text: sb.armed.length + " fault(s) armed" }) : null);
   put("#sample-phones", sb.sample_customers.map((c) => h("option", { value: c.phone, text: c.name + (c.tags.length ? " · " + c.tags.join(", ") : "") })));
   const flaky = h("input", { type: "checkbox", checked: sb.mock_flaky });
