@@ -37,7 +37,7 @@ Every payment outcome is handled on screen:
 The **Network** bar at the bottom lists every Shopify, store-tool and terminal call each action made, including
 each 429 or 503 and the retry that absorbed it.
 
-`python run.py serve --no-flake` turns the mock's failures off. With `ELUNO_POS_BASE_URL` set, `serve` skips its
+In this hosted demo the mock's failures are turned up so they show in a short session: about **half** of Shopify writes get a 429 and half of new card/UPI charges get a 503 once (`ELUNO_POS_MOCK_FAIL_RATE`, default `0.5`). The Network bar counts each one the till absorbed ("This session: 429 × 6 · 503 × 3, all retried"). At this rate about 1 order in 32 meets five 429s in a row; it keeps its invoice and waits as "paid, Shopify pending" until **Send pending to Shopify**. `demo`, `day`, `race` and the tests use the mock's shipped rates (10% and 30%). `python run.py serve --no-flake` turns the mock's failures off. With `ELUNO_POS_BASE_URL` set, `serve` skips its
 own mock and runs against that backend instead (no demo controls).
 
 ### Hosting it (free)
@@ -267,6 +267,8 @@ It is very fast and genuinely useful, but nothing it decides is right until the 
 The starter kit is in `starter-kit/` so that one clone runs. Changes to `mock_server.py`, each marked
 "eluno-pos addition" in the file:
 
+* `--rate-429` and `--rate-503` set how often it answers 429 (Shopify writes) and 503 (new terminal charges);
+  the defaults are the shipped 10% and 30%.
 * `--today YYYY-MM-DD` pins the date it stamps on orders (in IST, so the demo gives the same result in any
   timezone), for reproducible demos and tests. Without the flag it behaves as shipped.
 * `POST /admin/api/2026-10/customers.json` creates a customer, the way Shopify does (422 if the phone is

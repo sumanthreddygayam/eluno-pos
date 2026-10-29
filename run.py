@@ -53,7 +53,8 @@ def main(argv):
         if os.environ.get("ELUNO_POS_BASE_URL"):  # a backend already exists (another mock, or the real systems)
             serve(settings, port, host)
         else:  # the hosted demo: own mock, 429/503 on, resettable from the screen
-            serve(settings, port, host, sandbox=True, flaky="--no-flake" not in argv and os.environ.get("ELUNO_POS_MOCK_FLAKY", "1") != "0")
+            serve(settings, port, host, sandbox=True, flaky="--no-flake" not in argv and os.environ.get("ELUNO_POS_MOCK_FLAKY", "1") != "0",
+                  fail_rate=float(os.environ.get("ELUNO_POS_MOCK_FAIL_RATE", "0.5")))
         return 0
     if cmd == "pos":
         from eluno_pos.cli import main as cli

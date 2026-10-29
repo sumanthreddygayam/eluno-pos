@@ -41,6 +41,7 @@ L = lambda n: json.load(open(os.path.join(HERE, "..", "data", n)))
 API = "/admin/api/2026-10/"
 random.seed(7)
 FLAKE = True
+RATE_429, RATE_503 = 0.1, 0.3  # eluno-pos addition: --rate-429 / --rate-503 change them; defaults as shipped
 
 S = {
     "customers": L("customers.json"), "locations": L("locations.json"), "products": L("products.json"),
@@ -126,7 +127,7 @@ class H(BaseHTTPRequestHandler):
             amt = int(b.get("amount_paise", 0))
             if amt <= 0: return self._err(422, "amount_paise must be > 0")
             key = b.get("order_ref")
-            if FLAKE and key and key not in S["charges"] and random.random() < 0.3 and not S["charges"].get("_flaked_" + str(key)):
+            if FLAKE and key and key not in S["charges"] and random.random() < RATE_503 and not S["charges"].get("_flaked_" + str(key)):
                 S["charges"]["_flaked_" + str(key)] = True; return self._send(503, {"error": "terminal timeout, retry with the same order_ref"})
             cid = "chg_" + str(nid()); c = {"charge_id": cid, "status": "captured", "amount_paise": amt, "method": b.get("method", "upi"), "order_ref": key, "refunded_paise": 0, "captured_at": now()}
             S["charges"][cid] = c; return self._send(201, c)
@@ -143,7 +144,7 @@ class H(BaseHTTPRequestHandler):
             rx = dict(b, rx_id="RX%d" % (max(nums + [5000]) + 1), created_at=now())
             S["rx"].append(rx); return self._send(201, {"prescription": rx})
         if not p.startswith(API): return self._err(404, "Not Found")
-        if FLAKE and random.random() < 0.1: return self._send(429, {"errors": "Exceeded 2 calls per second for api client. Reduce request rates to resume uninterrupted service."}, {"Retry-After": "1.0"})
+        if FLAKE and random.random() < RATE_429: return self._send(429, {"errors": "Exceeded 2 calls per second for api client. Reduce request rates to resume uninterrupted service."}, {"Retry-After": "1.0"})
         r = p[len(API):]
         if r == "customers.json":  # eluno-pos addition: a new customer at the counter
             c = (b or {}).get("customer") or {}
@@ -256,7 +257,9 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("--port", type=int, default=8787); ap.add_argument("--no-flake", action="store_true")
     ap.add_argument("--today", help="YYYY-MM-DD: stamp new orders/refunds with this date (eluno-pos addition)")
-    a = ap.parse_args(); FLAKE = not a.no_flake
+    ap.add_argument("--rate-429", type=float, default=0.1, help="share of Shopify writes answered 429 (eluno-pos addition)")
+    ap.add_argument("--rate-503", type=float, default=0.3, help="share of new terminal charges answered 503 once (eluno-pos addition)")
+    a = ap.parse_args(); FLAKE = not a.no_flake; RATE_429, RATE_503 = a.rate_429, a.rate_503
     if a.today: from datetime import date as _d; TODAY = _d.fromisoformat(a.today)
-    print(f"mock Shopify Admin + SMT + terminal on http://localhost:{a.port}  (flaky 429/503: {'off' if a.no_flake else 'on'})")
+    print(f"mock Shopify Admin + SMT + terminal on http://localhost:{a.port}  (flaky 429/503: {'off' if a.no_flake else 'on, %d%% / %d%%' % (RATE_429 * 100, RATE_503 * 100)})")
     HTTPServer(("0.0.0.0", a.port), H).serve_forever()

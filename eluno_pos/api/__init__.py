@@ -431,16 +431,17 @@ def make_handler(api: Api, web_dir: Optional[str] = WEB):
     return Handler
 
 
-def serve(settings: Settings, port: int = 8000, host: str = "127.0.0.1", sandbox: bool = False, flaky: bool = True) -> None:
+def serve(settings: Settings, port: int = 8000, host: str = "127.0.0.1", sandbox: bool = False, flaky: bool = True,
+          fail_rate: float = 0.5) -> None:
     """sandbox=True: the hosted demo. This process starts its own mock (429/503 on unless flaky=False) and can reset it.
     sandbox=False: a till against an existing backend at settings.base_url."""
     shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
     if sandbox:
         from .sandbox import Sandbox
-        sb = Sandbox(settings, flaky=flaky)
+        sb = Sandbox(settings, flaky=flaky, fail_rate=fail_rate)
         api, closer = Api(sandbox=sb), sb.close
         print("Eluno POS on http://%s:%d  (hosted-demo mode: own mock at %s, 429/503 %s, business date %s)" % (
-            shown, port, sb.mock.url, "on" if flaky else "off", sb.app.clock.today()))
+            shown, port, sb.mock.url, "on, %d%% each" % (fail_rate * 100) if flaky else "off", sb.app.clock.today()))
         for series, info in sb.cutover.items():
             print("  series %-22s last issued %05d" % (series, info["last"]))
     else:

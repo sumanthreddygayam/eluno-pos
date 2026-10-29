@@ -58,9 +58,10 @@ def _sample_customers() -> list:
 
 
 class Sandbox:
-    def __init__(self, settings: Settings, flaky: bool = True):
+    def __init__(self, settings: Settings, flaky: bool = True, fail_rate: float = 0.5):
         self.base_settings = settings
         self.flaky = flaky
+        self.fail_rate = fail_rate  # share of Shopify writes that get a 429, and of new card/UPI charges that get a 503 once
         self.faults = FaultInjector()
         self.mock: Optional[MockServer] = None
         self.app: Optional[PosApp] = None
@@ -73,7 +74,8 @@ class Sandbox:
 
     # ------------------------------------------------------------ lifecycle
     def _start(self) -> None:
-        self.mock = MockServer(flaky=self.flaky, port=free_port(), today=self.base_settings.business_date).__enter__()
+        self.mock = MockServer(flaky=self.flaky, port=free_port(), today=self.base_settings.business_date,
+                               rate_429=self.fail_rate, rate_503=self.fail_rate).__enter__()
         self._dir = tempfile.mkdtemp(prefix="eluno-pos-")
         settings = replace(self.base_settings, base_url=self.mock.url, db_path=os.path.join(self._dir, "pos.db"))
         self.faults.clear()
@@ -133,7 +135,7 @@ class Sandbox:
 
     def status(self) -> Dict[str, Any]:
         live = [r for r in self.faults.rules if r["left"] > 0]
-        return {"mock_flaky": self.flaky, "mock_url": self.mock.url if self.mock else None,
+        return {"mock_flaky": self.flaky, "fail_rate": self.fail_rate, "mock_url": self.mock.url if self.mock else None,
                 "available": [{"name": k, "label": v["label"]} for k, v in FAULTS.items()],
                 "armed": [{"kind": r["kind"], "call": "%s %s" % (r["method"], r["part"]), "left": r["left"]} for r in live],
                 "log": self.faults.log[-20:], "sample_customers": _sample_customers()}

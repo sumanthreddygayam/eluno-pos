@@ -103,17 +103,29 @@ async function call(method, path, body, label) {
 }
 const api = async (method, path, body, label) => (await call(method, path, body, label)).data;
 
+// Failures the till absorbed this session, by kind: the mock's random 429s (Shopify) and 503s (card machine) are rare
+// per bill, so a running count shows them even after the entry that hit one has scrolled away.
+const ABSORBED = { 429: 0, 503: 0, lost: 0 };
+
 function logNet(label, calls, ms, error) {
   NET.unshift({ at: new Date(), label, calls, ms, error });
   NET.length = Math.min(NET.length, 80);
+  calls.filter((c) => c.retry_in !== undefined).forEach((c) => {
+    if (c.status === 429) ABSORBED[429] += 1;
+    else if (c.status === 503) ABSORBED[503] += 1;
+    else if (c.status === "no response") ABSORBED.lost += 1;
+  });
   renderNet();
 }
 
 function renderNet() {
-  const last = NET.find((e) => e.calls.length) || NET[0];
-  const retries = NET.slice(0, 20).reduce((n, e) => n + e.calls.filter((c) => c.retry_in !== undefined).length, 0);
-  put("#netlog-summary", last ? last.label + (last.ms !== null ? " · " + (last.ms / 1000).toFixed(2) + " s" : "") +
-    " · " + last.calls.length + " upstream call(s)" + (retries ? " · " + retries + " retries absorbed recently" : "") : "no calls yet");
+  // the latest thing the salesperson did (a payment, a refund), not the stock refresh that follows it
+  const last = NET.find((e) => e.calls.length && !/^(Stock and lenses|Bill status|Demo status)$/.test(e.label)) || NET[0];
+  const absorbed = [ABSORBED[429] ? "429 × " + ABSORBED[429] + " (Shopify busy)" : "", ABSORBED[503] ? "503 × " + ABSORBED[503] + " (card machine timeout)" : "",
+    ABSORBED.lost ? ABSORBED.lost + " lost answer(s)" : ""].filter(Boolean);
+  put("#netlog-summary",
+    last ? last.label + (last.ms !== null ? " · " + (last.ms / 1000).toFixed(2) + " s" : "") + " · " + last.calls.length + " call(s)" : "no calls yet",
+    absorbed.length ? h("span", { class: "absorbed", text: "This session: " + absorbed.join(" · ") + ", all retried" }) : h("span", { class: "absorbed none", text: "No failures yet this session" }));
   put("#netlog-body", NET.map((e) => h("div", { class: "netentry" },
     h("div", { class: "head" },
       h("b", { text: e.label }),
@@ -1418,7 +1430,7 @@ function renderSandbox() {
   };
   put("#sandbox",
     h("h3", { text: "The mock's own failures" }),
-    h("p", { text: sb.mock_flaky ? "On: about 10% of Shopify writes answer 429 (too many requests) and ~30% of new terminal charges answer 503 once. The till retries them; watch the Network bar at the bottom."
+    h("p", { text: sb.mock_flaky ? "On: about " + Math.round(sb.fail_rate * 100) + "% of Shopify writes (orders, refunds, new customers) answer 429 \"too busy\", and about " + Math.round(sb.fail_rate * 100) + "% of new card/UPI charges answer 503 \"terminal timeout\" once. The till retries them; the Network bar at the bottom counts each one."
       : "Off: the mock answers every call first time." }),
     h("h3", { text: "Failures the mock can't produce" }),
     h("p", { class: "small muted", text: "Arm one, then bill as usual. Each fires on the next matching call." }),

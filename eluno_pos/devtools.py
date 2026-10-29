@@ -28,15 +28,20 @@ def free_port() -> int:
 class MockServer:
     """`with MockServer(flaky=True) as m: ... m.url ...` - a fresh in-memory Shopify/SMT/terminal."""
 
-    def __init__(self, flaky: bool = True, port: Optional[int] = None, today: Optional[str] = None):
+    def __init__(self, flaky: bool = True, port: Optional[int] = None, today: Optional[str] = None,
+                 rate_429: Optional[float] = None, rate_503: Optional[float] = None):
         self.flaky = flaky
         self.today = today
+        self.rates = (rate_429, rate_503)  # None = the mock's own defaults (10% / 30%)
         self.port = port or free_port()
         self.url = "http://127.0.0.1:%d" % self.port
         self.proc: Optional[subprocess.Popen] = None
 
     def __enter__(self) -> "MockServer":
         args = [sys.executable, MOCK, "--port", str(self.port)] + ([] if self.flaky else ["--no-flake"]) + (["--today", self.today] if self.today else [])
+        for flag, rate in zip(("--rate-429", "--rate-503"), self.rates):
+            if rate is not None:
+                args += [flag, str(rate)]
         self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=os.path.dirname(MOCK))
         deadline = time.time() + 15
         while time.time() < deadline:

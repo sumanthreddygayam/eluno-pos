@@ -467,3 +467,8 @@ tr.sub td { color: var(--muted); font-size: 12.5px; }
 table.rxedit td { padding: 4px 8px 4px 0; border: 0; }
 table.rxedit th { border: 0; padding-right: 10px; }
 .rxin { width: 88px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* network bar: running count of absorbed failures */
+#netlog-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: flex-end; }
+.absorbed { padding: 1px 8px; border-radius: 6px; background: var(--warning-bg); color: var(--warning-text); font-weight: 600; }
+.absorbed.none { background: var(--surface-2); color: var(--muted); font-weight: 500; }
